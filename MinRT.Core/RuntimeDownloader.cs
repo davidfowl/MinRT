@@ -41,13 +41,13 @@ public sealed class RuntimeDownloader
     {
         var runtimePath = _paths.GetRuntimePath(version, rid);
         
-        // Download base runtime package (always required)
-        var runtimePackageId = $"Microsoft.NETCore.App.Runtime.{rid}";
-        var runtimePackagePath = await _nuget.DownloadPackageAsync(runtimePackageId, version, ct);
-
         // Check if already assembled (base runtime)
         if (!IsRuntimeComplete(runtimePath, version))
         {
+            // Download base runtime package
+            var runtimePackageId = $"Microsoft.NETCore.App.Runtime.{rid}";
+            var runtimePackagePath = await _nuget.DownloadPackageAsync(runtimePackageId, version, ct);
+
             AssembleRuntimeLayout(runtimePath, version, rid, runtimePackagePath, "Microsoft.NETCore.App");
 
             if (!OperatingSystem.IsWindows())
