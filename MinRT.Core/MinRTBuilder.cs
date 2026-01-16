@@ -68,11 +68,12 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Add additional probing paths for assembly resolution
+    /// Add a folder of DLLs to the runtime probing paths.
+    /// The runtime will look in these folders when resolving assemblies.
     /// </summary>
     public MinRTBuilder AddProbingPath(string path)
     {
-        _probingPaths.Add(path);
+        _probingPaths.Add(Path.GetFullPath(path));
         return this;
     }
 
@@ -191,7 +192,7 @@ public sealed class MinRTBuilder
         // Copy app DLL next to apphost (apphost expects it relative to itself)
         File.Copy(appPath, appDllDest, overwrite: true);
 
-        // Copy runtimeconfig.json if exists
+        // Copy runtimeconfig.json
         var runtimeConfigSrc = Path.ChangeExtension(appPath, ".runtimeconfig.json");
         if (File.Exists(runtimeConfigSrc))
         {
@@ -199,12 +200,28 @@ public sealed class MinRTBuilder
             File.Copy(runtimeConfigSrc, runtimeConfigDest, overwrite: true);
         }
 
-        // Copy deps.json if exists
+        // Copy deps.json if exists (skip if probing paths provided - we'll copy DLLs directly)
         var depsSrc = Path.ChangeExtension(appPath, ".deps.json");
-        if (File.Exists(depsSrc))
+        if (File.Exists(depsSrc) && _probingPaths.Count == 0)
         {
             var depsDest = Path.Combine(appDir, Path.GetFileName(depsSrc));
             File.Copy(depsSrc, depsDest, overwrite: true);
+        }
+
+        // Copy DLLs from probing paths to app directory (runtime probes app dir without deps.json)
+        foreach (var probingPath in _probingPaths)
+        {
+            if (Directory.Exists(probingPath))
+            {
+                foreach (var file in Directory.GetFiles(probingPath, "*.dll"))
+                {
+                    var destFile = Path.Combine(appDir, Path.GetFileName(file));
+                    if (!File.Exists(destFile))
+                    {
+                        File.Copy(file, destFile);
+                    }
+                }
+            }
         }
 
         // Patch apphost

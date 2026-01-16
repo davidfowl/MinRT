@@ -72,6 +72,25 @@ Replacement: myapp.dll\0\0\0\0\0\0\0... (null-padded to 64 chars)
 
 This is the same technique used by the .NET SDK.
 
+## Assembly Resolution Behavior
+
+**Key findings from runtime host code (D:\dev\git\runtime):**
+
+1. **Without deps.json**: All assemblies in the app directory become part of TPA (Trusted Platform Assemblies). The runtime probes the app base directory only.
+
+2. **With deps.json + additionalProbingPaths**: The runtime uses `to_library_package_path()` which constructs:
+   ```
+   {probingPath}/{library_name}/{library_version}/{asset.relative_path}
+   ```
+   Example: `C:\cache\Newtonsoft.Json\13.0.1\lib\net6.0\Newtonsoft.Json.dll`
+   
+   This **requires NuGet package layout structure**, NOT flat folders.
+
+3. **Our approach**: For apps with dependencies, use `AddProbingPath()` which copies DLLs directly into the app directory. This works because:
+   - Without deps.json, all DLLs in app dir are used
+   - Simpler than maintaining NuGet layout structure
+   - Works for published (flat) app layouts
+
 ## Files
 
 ```

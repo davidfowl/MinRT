@@ -1,5 +1,5 @@
 // MinRT.TestHost - Test harness for MinRT
-// Usage: MinRT.TestHost <path-to-dll> [--aspnet] [--layout <path>] [--create-layout <path>] [args...]
+// Usage: MinRT.TestHost <path-to-dll> [options] [args...]
 
 using MinRT.Core;
 
@@ -8,15 +8,17 @@ if (args.Length == 0)
     Console.WriteLine("Usage: MinRT.TestHost <path-to-dll> [options] [args...]");
     Console.WriteLine();
     Console.WriteLine("Options:");
-    Console.WriteLine("  --aspnet              Include ASP.NET Core framework");
-    Console.WriteLine("  --layout <path>       Use existing runtime layout (no download)");
-    Console.WriteLine("  --create-layout <path> Create a runtime layout and exit");
+    Console.WriteLine("  --aspnet                     Include ASP.NET Core framework");
+    Console.WriteLine("  --layout <path>              Use existing runtime layout (no download)");
+    Console.WriteLine("  --create-layout <path>       Create a runtime layout and exit");
+    Console.WriteLine("  --probe <path>               Add a folder of DLLs to probing paths");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  MinRT.TestHost ./hello.dll");
     Console.WriteLine("  MinRT.TestHost ./hello-web.dll --aspnet");
     Console.WriteLine("  MinRT.TestHost --create-layout ./my-runtime --aspnet");
     Console.WriteLine("  MinRT.TestHost ./hello.dll --layout ./my-runtime");
+    Console.WriteLine("  MinRT.TestHost ./myapp.dll --probe ./libs");
     return 1;
 }
 
@@ -24,6 +26,17 @@ if (args.Length == 0)
 var includeAspNet = args.Contains("--aspnet");
 var createLayoutIdx = Array.IndexOf(args, "--create-layout");
 var layoutIdx = Array.IndexOf(args, "--layout");
+
+// Parse --probe args (can be multiple)
+var probePaths = new List<string>();
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--probe" && i + 1 < args.Length)
+    {
+        probePaths.Add(args[i + 1]);
+        i += 1;
+    }
+}
 
 // Use local cache in project folder
 var cacheDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".minrt-cache"));
@@ -59,13 +72,10 @@ if (createLayoutIdx >= 0)
 
 // Mode: Run app
 var dllPath = Path.GetFullPath(args[0]);
-var appArgs = args.Skip(1)
-    .Where(a => a != "--aspnet" && a != "--layout" && a != args.ElementAtOrDefault(layoutIdx + 1))
-    .ToArray();
-if (appArgs.Length == 0) appArgs = null;
 
 Console.WriteLine($"App: {dllPath}");
 Console.WriteLine($"ASP.NET Core: {includeAspNet}");
+Console.WriteLine($"Probe paths: {probePaths.Count}");
 Console.WriteLine($"Cache: {cacheDir}");
 
 var runBuilder = new MinRTBuilder()
@@ -77,6 +87,12 @@ var runBuilder = new MinRTBuilder()
 if (includeAspNet)
 {
     runBuilder.WithAspNetCore();
+}
+
+foreach (var probePath in probePaths)
+{
+    Console.WriteLine($"  Probe: {probePath}");
+    runBuilder.AddProbingPath(probePath);
 }
 
 if (layoutIdx >= 0)
@@ -95,7 +111,7 @@ Console.WriteLine($"Runtime: {context.RuntimePath}");
 Console.WriteLine($"AppHost: {context.AppHostPath}");
 Console.WriteLine("---");
 
-var exitCode = context.Run(appArgs);
+var exitCode = context.Run();
 
 Console.WriteLine("---");
 Console.WriteLine($"Exit code: {exitCode}");
