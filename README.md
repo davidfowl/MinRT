@@ -56,12 +56,32 @@ int exitCode = await context.RunAsync(args);
 ## Cache Layout
 
 ```
-~/.minrt/
-├── runtimes/10.0.0-win-x64/     # Downloaded runtime
-├── packages/                     # NuGet packages
-├── apphosts/{hash}/              # Patched apphosts + app copies
-└── downloads/                    # Temp files
+~/.minrt/                                    # Default cache (or WithCacheDirectory)
+├── runtimes/
+│   └── 10.0.0-win-x64/                      # Downloaded runtime
+│       ├── host/fxr/10.0.0/
+│       │   └── hostfxr.dll
+│       └── shared/
+│           ├── Microsoft.NETCore.App/10.0.0/
+│           │   ├── coreclr.dll
+│           │   ├── System.*.dll
+│           │   └── Microsoft.NETCore.App.runtimeconfig.json
+│           └── Microsoft.AspNetCore.App/10.0.0/    # If WithAspNetCore()
+│               └── Microsoft.AspNetCore.*.dll
+├── packages/                                # Extracted NuGet packages
+│   ├── microsoft.netcore.app.runtime.win-x64/10.0.0/
+│   ├── microsoft.netcore.app.host.win-x64/10.0.0/
+│   └── microsoft.aspnetcore.app.runtime.win-x64/10.0.0/
+├── apphosts/                                # Patched apphosts (per app)
+│   └── {hash}/                              # Hash of source app path
+│       ├── myapp.exe                        # Patched apphost
+│       ├── myapp.dll                        # Copied from source
+│       ├── myapp.runtimeconfig.json         # Copied from source
+│       └── myapp.deps.json                  # Copied from source
+└── downloads/                               # Temp .nupkg files
 ```
+
+The app DLL and config files are copied into the apphost directory because the apphost binary has a 64-character limit for the embedded path. Each unique source path gets its own directory (based on path hash).
 
 ## Requirements
 
