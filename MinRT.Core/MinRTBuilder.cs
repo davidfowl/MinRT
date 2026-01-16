@@ -4,6 +4,17 @@
 namespace MinRT.Core;
 
 /// <summary>
+/// Shared frameworks that can be included with the runtime.
+/// </summary>
+public enum SharedFramework
+{
+    /// <summary>Microsoft.NETCore.App - Base runtime (always included)</summary>
+    NetCore,
+    /// <summary>Microsoft.AspNetCore.App - ASP.NET Core</summary>
+    AspNetCore
+}
+
+/// <summary>
 /// Fluent builder for constructing a runnable .NET context.
 /// Downloads runtime and apphost from NuGet, patches apphost, ready to execute.
 /// </summary>
@@ -15,6 +26,7 @@ public sealed class MinRTBuilder
     private string? _appPath;
     private string? _runtimeVersion;
     private readonly List<string> _probingPaths = [];
+    private readonly HashSet<SharedFramework> _sharedFrameworks = [SharedFramework.NetCore];
 
     /// <summary>
     /// Path to the application DLL to run (required)
@@ -80,6 +92,26 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
+    /// Include a shared framework (e.g., ASP.NET Core).
+    /// Microsoft.NETCore.App is always included.
+    /// </summary>
+    public MinRTBuilder WithSharedFramework(SharedFramework framework)
+    {
+        _sharedFrameworks.Add(framework);
+        return this;
+    }
+
+    /// <summary>
+    /// Include ASP.NET Core shared framework.
+    /// Shorthand for WithSharedFramework(SharedFramework.AspNetCore)
+    /// </summary>
+    public MinRTBuilder WithAspNetCore()
+    {
+        _sharedFrameworks.Add(SharedFramework.AspNetCore);
+        return this;
+    }
+
+    /// <summary>
     /// Build the runtime context - downloads runtime/apphost and patches apphost
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
@@ -105,8 +137,8 @@ public sealed class MinRTBuilder
         using var http = new HttpClient();
         var downloader = new RuntimeDownloader(http, paths);
 
-        // 1. Download runtime
-        var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, ct);
+        // 1. Download runtime (and shared frameworks)
+        var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
 
         // 2. Download apphost template
         var appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);

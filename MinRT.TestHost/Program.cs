@@ -1,33 +1,43 @@
 // MinRT.TestHost - Test harness for MinRT
-// Usage: MinRT.TestHost <path-to-dll> [args...]
+// Usage: MinRT.TestHost <path-to-dll> [--aspnet] [args...]
 
 using MinRT.Core;
 
 if (args.Length == 0)
 {
-    Console.WriteLine("Usage: MinRT.TestHost <path-to-dll> [args...]");
+    Console.WriteLine("Usage: MinRT.TestHost <path-to-dll> [--aspnet] [args...]");
     Console.WriteLine();
     Console.WriteLine("Example: MinRT.TestHost ./hello.dll");
+    Console.WriteLine("Example: MinRT.TestHost ./hello-web.dll --aspnet");
     return 1;
 }
 
 var dllPath = Path.GetFullPath(args[0]);
-var appArgs = args.Length > 1 ? args[1..] : null;
+var includeAspNet = args.Contains("--aspnet");
+var appArgs = args.Skip(1).Where(a => a != "--aspnet").ToArray();
+if (appArgs.Length == 0) appArgs = null;
 
 // Use local cache in project folder
 var cacheDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".minrt-cache"));
 
 Console.WriteLine($"App: {dllPath}");
+Console.WriteLine($"ASP.NET Core: {includeAspNet}");
 Console.WriteLine($"Cache: {cacheDir}");
 Console.WriteLine();
 
 Console.WriteLine("Building MinRT context...");
-var context = await new MinRTBuilder()
+var builder = new MinRTBuilder()
     .WithAppPath(dllPath)
     .WithTargetFramework("net10.0")
     .WithRuntimeVersion("10.0.0")
-    .WithCacheDirectory(cacheDir)
-    .BuildAsync();
+    .WithCacheDirectory(cacheDir);
+
+if (includeAspNet)
+{
+    builder.WithAspNetCore();
+}
+
+var context = await builder.BuildAsync();
 
 Console.WriteLine($"Runtime: {context.RuntimePath}");
 Console.WriteLine($"AppHost: {context.AppHostPath}");
