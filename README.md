@@ -99,21 +99,23 @@ var alc = await NuGetAssemblyLoader.CreateBuilder()
     // Package references
     .AddPackage("Microsoft.Extensions.Logging", "9.0.0")
     .AddPackage("Newtonsoft.Json", "13.0.3")
-    .AddPackageRange("Serilog", "[3.0.0, 4.0.0)")   // Version range
+    .AddPackage("SomePackage", "1.0.0", allowNewer: true)  // >= 1.0.0
+    .AddPackageRange("Serilog", "[3.0.0, 4.0.0)")         // Version range
     
-    // Feed configuration
+    // Feed configuration (choose one approach)
+    .UseDefaultNuGetConfig()                              // Like dotnet restore
     .AddFeed("https://api.nuget.org/v3/index.json")
     .AddFeed("https://pkgs.dev.azure.com/org/feed/nuget/v3/index.json", 
-             "MyFeed", username, password)          // Authenticated feed
-    .WithNuGetConfig("./nuget.config")              // Load feeds from config
+             "MyFeed", username, password)                // Authenticated feed
+    .WithNuGetConfig("./nuget.config")                    // Specific config file
     
     // Resolution settings
     .WithTargetFramework("net9.0")
-    .WithPackagesDirectory("./packages")            // Cache location
-    .WithDependencyBehavior(DependencyBehavior.Lowest)  // Like NuGet default
+    .WithPackagesDirectory("./packages")                  // Cache location
+    .WithDependencyBehavior(DependencyBehavior.Lowest)    // Like NuGet default
     
     // Diagnostics
-    .WithLogger(loggerFactory)                      // Rich logging
+    .WithLogger(loggerFactory)                            // Rich logging
     
     .BuildAsync();
 
@@ -121,6 +123,38 @@ var alc = await NuGetAssemblyLoader.CreateBuilder()
 var assembly = alc.LoadAssembly("Newtonsoft.Json");
 var type = alc.GetType("Newtonsoft.Json", "Newtonsoft.Json.JsonConvert");
 var instance = alc.CreateInstance("MyLib", "MyLib.MyClass", arg1, arg2);
+```
+
+### Feed Configuration Options
+
+| Method | Equivalent To | Description |
+|--------|---------------|-------------|
+| `UseDefaultNuGetConfig()` | `dotnet restore` | Walks directory tree + user + machine config |
+| `UseDefaultNuGetConfig("./src")` | `cd ./src && dotnet restore` | Start from specific directory |
+| `WithNuGetConfig("./nuget.config")` | `--configfile ./nuget.config` | Specific config file only |
+| `AddFeed(url)` | `--source <url>` | Explicit feed (additive) |
+| *(none)* | Fallback | Uses nuget.org |
+
+#### UseDefaultNuGetConfig Behavior
+
+When you call `UseDefaultNuGetConfig()`, MinRT.NuGet loads package sources the same way `dotnet restore` does:
+
+1. **Walk up directory tree** - Starting from root (or current dir), look for `nuget.config` files in each parent
+2. **User config** - `%APPDATA%\NuGet\NuGet.Config` (Windows) or `~/.nuget/NuGet/NuGet.Config` (Linux/macOS)
+3. **Machine-wide config** - System-level NuGet configuration
+
+This means your existing `nuget.config` files (with private feeds, credentials, etc.) will "just work".
+
+**Example - Using default config like dotnet restore:**
+
+```csharp
+// Equivalent to: cd /path/to/project && dotnet restore
+var alc = await NuGetAssemblyLoader.CreateBuilder()
+    .AddPackage("MyInternalPackage", "1.0.0")
+    .WithTargetFramework("net9.0")
+    .UseDefaultNuGetConfig("/path/to/project")
+    .WithLogger(logger)
+    .BuildAsync();
 ```
 
 ### Features
@@ -149,6 +183,49 @@ dbug:   Microsoft.Extensions.Primitives 9.0.0
 info: Downloading packages to ./packages...
 info: Loaded 6 assemblies
 info: NuGet assembly loader ready
+```
+
+### Static Compile + Runtime Download Pattern
+
+You can compile against a package for IntelliSense but download it at runtime:
+
+```xml
+<!-- In .csproj - compile against but don't deploy -->
+<PackageReference Include="Humanizer.Core" Version="2.14.1">
+  <ExcludeAssets>runtime</ExcludeAssets>
+</PackageReference>
+```
+
+```csharp
+using System.Runtime.CompilerServices;
+using Humanizer;  // Full IntelliSense - even though DLL isn't deployed!
+
+// ModuleInitializer downloads before Main() runs
+static class NuGetResolver
+{
+    [ModuleInitializer]
+    public static void Initialize()
+    {
+        var alc = NuGetAssemblyLoader.CreateBuilder()
+            .AddPackage("Humanizer.Core", "2.14.1")
+            .WithTargetFramework("net9.0")
+            .UseDefaultNuGetConfig()
+            .BuildAsync()
+            .GetAwaiter()
+            .GetResult();
+
+        // Register with default ALC
+        AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+        {
+            if (name.Name != null && alc.AssemblyPaths.TryGetValue(name.Name, out var path))
+                return alc.LoadFromAssemblyPath(path);
+            return null;
+        };
+    }
+}
+
+// Works at runtime - downloaded from NuGet!
+Console.WriteLine("hello world".Titleize());  // "Hello World"
 ```
 
 ---

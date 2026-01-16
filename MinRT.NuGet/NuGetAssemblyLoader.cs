@@ -27,13 +27,15 @@ public sealed class NuGetAssemblyLoader
     private NuGetFramework _framework = NuGetFramework.Parse("net9.0");
     private string _packagesDirectory;
     private string? _nugetConfigPath;
-    private ILogger<NuGetAssemblyLoader> _logger;
+    private string? _nugetConfigRoot;
+    private bool _useDefaultConfig;
+    private ILogger _logger;
     private DependencyBehavior _dependencyBehavior = DependencyBehavior.Lowest;
 
     private NuGetAssemblyLoader()
     {
         _packagesDirectory = Path.Combine(Path.GetTempPath(), "minrt-nuget", "packages");
-        _logger = NullLogger<NuGetAssemblyLoader>.Instance;
+        _logger = NullLogger.Instance;
     }
 
     /// <summary>
@@ -47,6 +49,25 @@ public sealed class NuGetAssemblyLoader
     public NuGetAssemblyLoader AddPackage(string packageId, string version)
     {
         _packages.Add((packageId, VersionRange.Parse(version)));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a package reference with a minimum version.
+    /// If allowNewer is true, allows any version >= the specified version.
+    /// </summary>
+    public NuGetAssemblyLoader AddPackage(string packageId, string version, bool allowNewer)
+    {
+        if (allowNewer)
+        {
+            // Create a range like [version, ) - meaning >= version
+            var nugetVersion = NuGetVersion.Parse(version);
+            _packages.Add((packageId, new VersionRange(minVersion: nugetVersion, includeMinVersion: true)));
+        }
+        else
+        {
+            _packages.Add((packageId, VersionRange.Parse(version)));
+        }
         return this;
     }
 
@@ -82,11 +103,23 @@ public sealed class NuGetAssemblyLoader
     }
 
     /// <summary>
-    /// Loads feeds from a nuget.config file.
+    /// Loads feeds from a specific nuget.config file.
     /// </summary>
     public NuGetAssemblyLoader WithNuGetConfig(string configPath)
     {
         _nugetConfigPath = Path.GetFullPath(configPath);
+        return this;
+    }
+
+    /// <summary>
+    /// Use default NuGet config resolution (like dotnet restore).
+    /// Walks up directory tree from root, then user config, then machine-wide config.
+    /// </summary>
+    /// <param name="root">Root directory to start searching from. Defaults to current directory.</param>
+    public NuGetAssemblyLoader UseDefaultNuGetConfig(string? root = null)
+    {
+        _useDefaultConfig = true;
+        _nugetConfigRoot = root != null ? Path.GetFullPath(root) : Directory.GetCurrentDirectory();
         return this;
     }
 
@@ -118,6 +151,15 @@ public sealed class NuGetAssemblyLoader
         return this;
     }
 
+    /// <summary>
+    /// Sets the logger for diagnostics.
+    /// </summary>
+    public NuGetAssemblyLoader WithLogger(ILogger logger)
+    {
+        _logger = logger;
+        return this;
+    }
+    
     /// <summary>
     /// Sets the logger for diagnostics.
     /// </summary>
@@ -201,11 +243,44 @@ public sealed class NuGetAssemblyLoader
     private async Task<List<PackageSource>> LoadPackageSourcesAsync()
     {
         var sources = new List<PackageSource>(_packageSources);
+        
+        _logger.LogDebug("Starting package source resolution");
+        _logger.LogDebug("  Explicit sources count: {Count}", _packageSources.Count);
+        _logger.LogDebug("  UseDefaultConfig: {UseDefault}", _useDefaultConfig);
+        _logger.LogDebug("  NuGetConfigPath: {ConfigPath}", _nugetConfigPath ?? "(none)");
 
-        // Load from nuget.config if specified
-        if (_nugetConfigPath != null)
+        // Load from default NuGet config resolution (like dotnet restore)
+        if (_useDefaultConfig)
         {
-            _logger.LogDebug("Loading package sources from {ConfigPath}", _nugetConfigPath);
+            _logger.LogDebug("Loading package sources using default NuGet config resolution from root: {Root}", _nugetConfigRoot);
+            
+            var settings = Settings.LoadDefaultSettings(_nugetConfigRoot);
+            _logger.LogDebug("Settings loaded, checking config file paths...");
+            
+            // Log which config files were loaded
+            var configFilePaths = settings.GetConfigFilePaths();
+            foreach (var configPath in configFilePaths)
+            {
+                _logger.LogDebug("  Config file: {ConfigFile}", configPath);
+            }
+            
+            var provider = new PackageSourceProvider(settings);
+            var allSources = provider.LoadPackageSources().ToList();
+            _logger.LogDebug("Found {Count} total sources in config (enabled and disabled)", allSources.Count);
+
+            foreach (var source in allSources)
+            {
+                _logger.LogDebug("  Source: {Name} ({Url}) - Enabled: {Enabled}", source.Name, source.Source, source.IsEnabled);
+                if (source.IsEnabled)
+                {
+                    sources.Add(source);
+                }
+            }
+        }
+        // Load from specific nuget.config file
+        else if (_nugetConfigPath != null)
+        {
+            _logger.LogDebug("Loading package sources from specific config: {ConfigPath}", _nugetConfigPath);
 
             if (!File.Exists(_nugetConfigPath))
             {
@@ -214,26 +289,34 @@ public sealed class NuGetAssemblyLoader
 
             var configDir = Path.GetDirectoryName(_nugetConfigPath)!;
             var configFile = Path.GetFileName(_nugetConfigPath);
+            _logger.LogDebug("  Config directory: {Dir}", configDir);
+            _logger.LogDebug("  Config filename: {File}", configFile);
+            
             var settings = Settings.LoadSpecificSettings(configDir, configFile);
             var provider = new PackageSourceProvider(settings);
 
             foreach (var source in provider.LoadPackageSources())
             {
+                _logger.LogDebug("  Source: {Name} ({Url}) - Enabled: {Enabled}", source.Name, source.Source, source.IsEnabled);
                 if (source.IsEnabled)
                 {
-                    _logger.LogDebug("  Found source: {Name} ({Url})", source.Name, source.Source);
                     sources.Add(source);
                 }
             }
+        }
+        else
+        {
+            _logger.LogDebug("No config resolution specified, will use fallback");
         }
 
         // Add nuget.org as fallback if no sources configured
         if (sources.Count == 0)
         {
-            _logger.LogDebug("No package sources configured, using nuget.org");
+            _logger.LogInformation("No package sources configured, using nuget.org as fallback");
             sources.Add(new PackageSource("https://api.nuget.org/v3/index.json", "nuget.org"));
         }
 
+        _logger.LogDebug("Final source count: {Count}", sources.Count);
         return sources;
     }
 
@@ -246,25 +329,44 @@ public sealed class NuGetAssemblyLoader
         HashSet<SourcePackageDependencyInfo> allDependencies,
         CancellationToken ct)
     {
+        _logger.LogDebug("CollectDependenciesAsync: Looking for {PackageId} {VersionRange}", packageId, versionRange);
+        _logger.LogDebug("  Searching {Count} repositories", repositories.Count);
+        
         // Find the best version for this package
         PackageIdentity? bestMatch = null;
         SourceRepository? bestSource = null;
 
         foreach (var repo in repositories)
         {
+            _logger.LogDebug("  Querying repository: {Name} ({Url})", repo.PackageSource.Name, repo.PackageSource.Source);
             try
             {
                 var findResource = await repo.GetResourceAsync<FindPackageByIdResource>(ct);
+                _logger.LogDebug("    Got FindPackageByIdResource");
+                
                 var versions = await findResource.GetAllVersionsAsync(packageId, cache, nugetLogger, ct);
+                var versionList = versions.ToList();
+                _logger.LogDebug("    Found {Count} versions for {PackageId}", versionList.Count, packageId);
+                
+                if (versionList.Count > 0)
+                {
+                    _logger.LogDebug("    Available versions: {Versions}", string.Join(", ", versionList.Take(10)));
+                }
 
-                var matchingVersion = versionRange.FindBestMatch(versions);
+                var matchingVersion = versionRange.FindBestMatch(versionList);
                 if (matchingVersion != null)
                 {
+                    _logger.LogDebug("    Best match from this repo: {Version}", matchingVersion);
                     if (bestMatch == null || versionRange.IsBetter(bestMatch.Version, matchingVersion))
                     {
                         bestMatch = new PackageIdentity(packageId, matchingVersion);
                         bestSource = repo;
+                        _logger.LogDebug("    New best overall: {PackageId} {Version} from {Repo}", packageId, matchingVersion, repo.PackageSource.Name);
                     }
+                }
+                else
+                {
+                    _logger.LogDebug("    No matching version found in range {Range}", versionRange);
                 }
             }
             catch (Exception ex)
@@ -275,9 +377,11 @@ public sealed class NuGetAssemblyLoader
 
         if (bestMatch == null)
         {
+            _logger.LogError("Package not found: {PackageId} {VersionRange} after searching all repositories", packageId, versionRange);
             throw new InvalidOperationException($"Package not found: {packageId} {versionRange}");
         }
 
+        _logger.LogDebug("Selected {PackageId} {Version} from {Source}", bestMatch.Id, bestMatch.Version, bestSource?.PackageSource.Name);
         await CollectDependenciesRecursiveAsync(bestMatch, repositories, cache, nugetLogger, allDependencies, ct);
     }
 
@@ -457,7 +561,7 @@ public sealed class NuGetAssemblyLoadContext : AssemblyLoadContext
     private readonly Dictionary<string, Assembly> _loadedAssemblies = new(StringComparer.OrdinalIgnoreCase);
 
     internal NuGetAssemblyLoadContext(ILogger logger, Dictionary<string, string> assemblyPaths)
-        : base(name: "NuGetAssemblyLoadContext", isCollectible: true)
+        : base(name: "NuGetAssemblyLoadContext", isCollectible: false)
     {
         _logger = logger;
         _assemblyPaths = assemblyPaths;

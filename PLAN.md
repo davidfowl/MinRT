@@ -176,11 +176,14 @@ This layout can be:
 - [x] Create portable runtime layout
 - [x] Use pre-existing layout
 
-### Part 2: NuGet AssemblyLoadContext (Managed) 🔄
+### Part 2: NuGet AssemblyLoadContext (Managed) ✅
 - [x] Design API
-- [ ] Implement NuGetAssemblyLoader
-- [ ] Test with simple package
-- [ ] Test with transitive dependencies
+- [x] Implement NuGetAssemblyLoader
+- [x] Test with simple package
+- [x] Test with transitive dependencies
+- [x] UseDefaultNuGetConfig() for dotnet restore-like config resolution
+- [x] ModuleInitializer + default ALC chaining pattern
+- [x] Comprehensive test suite (8 tests)
 
 ---
 
@@ -372,3 +375,9 @@ public class NuGetAssemblyLoadContext : AssemblyLoadContext
 - [x] Implement NuGetAssemblyLoader
 - [x] Test with simple package (Newtonsoft.Json)
 - [x] Test with transitive dependencies (Microsoft.Extensions.Logging - 6 packages)
+- [x] UseDefaultNuGetConfig() - dotnet restore-like config resolution
+- [x] ModuleInitializer + default ALC test (Humanizer)
+- [x] Version ranges and allowNewer
+- [x] Package caching verification
+- [x] Error handling (package not found)
+- [x] Target framework variations
