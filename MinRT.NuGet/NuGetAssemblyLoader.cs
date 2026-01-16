@@ -29,6 +29,7 @@ public sealed class NuGetAssemblyLoader
     private string? _nugetConfigPath;
     private string? _nugetConfigRoot;
     private bool _useDefaultConfig;
+    private bool _isCollectible;
     private ILogger _logger;
     private DependencyBehavior _dependencyBehavior = DependencyBehavior.Lowest;
 
@@ -152,6 +153,18 @@ public sealed class NuGetAssemblyLoader
     }
 
     /// <summary>
+    /// Makes the AssemblyLoadContext collectible (can be unloaded).
+    /// WARNING: Collectible ALCs cannot be used with AssemblyLoadContext.Default.Resolving
+    /// because non-collectible assemblies cannot reference collectible ones.
+    /// Use this only when loading assemblies via reflection within the ALC.
+    /// </summary>
+    public NuGetAssemblyLoader AsCollectible(bool collectible = true)
+    {
+        _isCollectible = collectible;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the logger for diagnostics.
     /// </summary>
     public NuGetAssemblyLoader WithLogger(ILogger logger)
@@ -234,9 +247,9 @@ public sealed class NuGetAssemblyLoader
         _logger.LogInformation("Loaded {AssemblyCount} assemblies", assemblyPaths.Count);
 
         // 6. Create the AssemblyLoadContext
-        var context = new NuGetAssemblyLoadContext(_logger, assemblyPaths);
+        var context = new NuGetAssemblyLoadContext(_logger, assemblyPaths, _isCollectible);
 
-        _logger.LogInformation("NuGet assembly loader ready");
+        _logger.LogInformation("NuGet assembly loader ready (collectible: {IsCollectible})", _isCollectible);
         return context;
     }
 
@@ -560,8 +573,8 @@ public sealed class NuGetAssemblyLoadContext : AssemblyLoadContext
     private readonly Dictionary<string, string> _assemblyPaths;
     private readonly Dictionary<string, Assembly> _loadedAssemblies = new(StringComparer.OrdinalIgnoreCase);
 
-    internal NuGetAssemblyLoadContext(ILogger logger, Dictionary<string, string> assemblyPaths)
-        : base(name: "NuGetAssemblyLoadContext", isCollectible: false)
+    internal NuGetAssemblyLoadContext(ILogger logger, Dictionary<string, string> assemblyPaths, bool isCollectible = false)
+        : base(name: "NuGetAssemblyLoadContext", isCollectible: isCollectible)
     {
         _logger = logger;
         _assemblyPaths = assemblyPaths;
