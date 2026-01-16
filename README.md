@@ -113,6 +113,7 @@ var alc = await NuGetAssemblyLoader.CreateBuilder()
     .WithTargetFramework("net9.0")
     .WithPackagesDirectory("./packages")                  // Cache location
     .WithDependencyBehavior(DependencyBehavior.Lowest)    // Like NuGet default
+    .AsCollectible()                                      // Enable unloading (see below)
     
     // Diagnostics
     .WithLogger(loggerFactory)                            // Rich logging
@@ -124,6 +125,48 @@ var assembly = alc.LoadAssembly("Newtonsoft.Json");
 var type = alc.GetType("Newtonsoft.Json", "Newtonsoft.Json.JsonConvert");
 var instance = alc.CreateInstance("MyLib", "MyLib.MyClass", arg1, arg2);
 ```
+
+### Collectible vs Non-Collectible
+
+| Mode | Use Case | Can Unload? | Works with Default.Resolving? |
+|------|----------|-------------|-------------------------------|
+| Non-collectible (default) | Static compile pattern, Default ALC integration | ❌ | ✅ |
+| Collectible | Plugin systems, hot reload | ✅ | ❌ |
+
+**Non-collectible (default)** - Use when integrating with `AssemblyLoadContext.Default.Resolving`:
+
+```csharp
+var alc = await NuGetAssemblyLoader.CreateBuilder()
+    .AddPackage("Humanizer.Core", "2.14.1")
+    .BuildAsync();
+
+// Works - assemblies can be referenced by Default ALC
+AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+    alc.AssemblyPaths.TryGetValue(name.Name!, out var path) 
+        ? alc.LoadFromAssemblyPath(path) : null;
+```
+
+**Collectible** - Use when you need to unload assemblies (plugin systems):
+
+```csharp
+var alc = await NuGetAssemblyLoader.CreateBuilder()
+    .AddPackage("MyPlugin", "1.0.0")
+    .AsCollectible()  // Enable unloading
+    .BuildAsync();
+
+// Must use reflection - stay inside the collectible context
+var assembly = alc.LoadAssembly("MyPlugin");
+var type = assembly.GetType("MyPlugin.Plugin")!;
+var instance = Activator.CreateInstance(type);
+// ... use via reflection ...
+
+// Later: unload when done
+alc.Unload();
+```
+
+> ⚠️ **Warning**: Collectible assemblies cannot be referenced by non-collectible assemblies. 
+> If you try to use `Default.Resolving` with a collectible ALC, you'll get:
+> `NotSupportedException: A non-collectible assembly may not reference a collectible assembly.`
 
 ### Feed Configuration Options
 
