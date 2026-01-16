@@ -1,0 +1,20 @@
+# Build outputs
+bin/
+obj/
+artifacts/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# NuGet
+*.nupkg
+
+# MinRT cache
+.minrt-cache/
+
+# OS files
+.DS_Store
+Thumbs.db
