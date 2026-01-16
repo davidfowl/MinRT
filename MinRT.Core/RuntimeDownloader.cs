@@ -50,7 +50,48 @@ public sealed class RuntimeDownloader
         // Assemble into dotnet layout
         AssembleRuntimeLayout(runtimePath, version, rid, runtimePackagePath);
 
+        // On Unix, set execute permissions on native binaries
+        if (!OperatingSystem.IsWindows())
+        {
+            SetExecutePermissions(runtimePath, version);
+        }
+
         return runtimePath;
+    }
+
+    private static void SetExecutePermissions(string runtimePath, string version)
+    {
+        // Set +x on hostfxr
+        var fxrDir = Path.Combine(runtimePath, "host", "fxr", version);
+        foreach (var file in Directory.GetFiles(fxrDir, "*.so"))
+        {
+            SetFileExecutable(file);
+        }
+        foreach (var file in Directory.GetFiles(fxrDir, "*.dylib"))
+        {
+            SetFileExecutable(file);
+        }
+
+        // Set +x on native files in shared dir
+        var sharedDir = Path.Combine(runtimePath, "shared", "Microsoft.NETCore.App", version);
+        foreach (var file in Directory.GetFiles(sharedDir, "*.so"))
+        {
+            SetFileExecutable(file);
+        }
+        foreach (var file in Directory.GetFiles(sharedDir, "*.dylib"))
+        {
+            SetFileExecutable(file);
+        }
+    }
+
+    private static void SetFileExecutable(string path)
+    {
+        // Use chmod via File.SetUnixFileMode (available in .NET 7+)
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            var mode = File.GetUnixFileMode(path);
+            File.SetUnixFileMode(path, mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        }
     }
 
     private static bool IsRuntimeComplete(string runtimePath, string version)

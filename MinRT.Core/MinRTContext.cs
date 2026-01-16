@@ -124,14 +124,28 @@ public sealed class MinRTContext
 
         unsafe
         {
-            fixed (char* hostPath = _runtimePath)
-            fixed (char* dotnetRoot = _runtimePath)
+            // On Windows: UTF-16, on Unix: UTF-8
+            nint hostPathPtr = IntPtr.Zero;
+            nint dotnetRootPtr = IntPtr.Zero;
+
+            try
             {
+                if (OperatingSystem.IsWindows())
+                {
+                    hostPathPtr = Marshal.StringToHGlobalUni(_runtimePath);
+                    dotnetRootPtr = Marshal.StringToHGlobalUni(_runtimePath);
+                }
+                else
+                {
+                    hostPathPtr = Marshal.StringToHGlobalAnsi(_runtimePath);
+                    dotnetRootPtr = Marshal.StringToHGlobalAnsi(_runtimePath);
+                }
+
                 var parameters = new HostFxrImports.hostfxr_initialize_parameters
                 {
                     size = sizeof(HostFxrImports.hostfxr_initialize_parameters),
-                    host_path = hostPath,
-                    dotnet_root = dotnetRoot
+                    host_path = hostPathPtr,
+                    dotnet_root = dotnetRootPtr
                 };
 
                 var err = HostFxrImports.Initialize(argv.Length, argv, ref parameters, out var handle);
@@ -148,6 +162,11 @@ public sealed class MinRTContext
                 {
                     HostFxrImports.Close(handle);
                 }
+            }
+            finally
+            {
+                if (hostPathPtr != IntPtr.Zero) Marshal.FreeHGlobal(hostPathPtr);
+                if (dotnetRootPtr != IntPtr.Zero) Marshal.FreeHGlobal(dotnetRootPtr);
             }
         }
     }
