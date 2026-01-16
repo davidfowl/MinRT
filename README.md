@@ -33,6 +33,41 @@ var context = await new MinRTBuilder()
     .BuildAsync();
 ```
 
+### ASP.NET Core
+
+```csharp
+var context = await new MinRTBuilder()
+    .WithAppPath("webapp.dll")
+    .WithRuntimeVersion("10.0.0")
+    .WithAspNetCore()                       // Include ASP.NET Core framework
+    .BuildAsync();
+
+context.Run();
+```
+
+### Pre-packaged Runtime Layout
+
+Create a portable runtime layout for distribution:
+
+```csharp
+// Create layout (no app - just runtime)
+await new MinRTBuilder()
+    .WithRuntimeVersion("10.0.0")
+    .WithAspNetCore()
+    .CreateLayoutAsync("./my-runtime");
+```
+
+Use a pre-existing layout (no download needed):
+
+```csharp
+var context = await new MinRTBuilder()
+    .WithAppPath("myapp.dll")
+    .WithLayout("./my-runtime")             // Use existing runtime
+    .BuildAsync();
+
+context.Run();
+```
+
 ### MinRTContext
 
 ```csharp
@@ -97,11 +132,58 @@ Approximate sizes for .NET 10 (win-x64):
 
 - None! That's the point.
 
+## Two Modes
+
+MinRT supports two deployment strategies:
+
+### Mode 1: Download-on-Demand (Default)
+
+```csharp
+var context = await new MinRTBuilder()
+    .WithAppPath("myapp.dll")
+    .WithRuntimeVersion("10.0.0")
+    .BuildAsync();
+```
+
+Downloads the .NET runtime from NuGet at first run, caches it locally.
+
+**Use when:** You want the smallest possible distribution and can tolerate a first-run download.
+
+### Mode 2: Pre-packaged Layout
+
+```csharp
+// Build time: create portable runtime
+await new MinRTBuilder()
+    .WithRuntimeVersion("10.0.0")
+    .WithAspNetCore()
+    .CreateLayoutAsync("./my-runtime");
+
+// Runtime: use pre-packaged runtime (no download)
+var context = await new MinRTBuilder()
+    .WithAppPath("myapp.dll")
+    .WithLayout("./my-runtime")
+    .BuildAsync();
+```
+
+Ship the runtime folder with your app. No internet required.
+
+**Use when:** You need offline support, predictable startup, or air-gapped environments.
+
+### Comparison
+
+| | Download-on-Demand | Pre-packaged Layout |
+|---|---|---|
+| Distribution size | Tiny (just your app) | Large (~77-105MB) |
+| First run | Slow (downloads runtime) | Fast |
+| Requires internet | Yes (first run) | No |
+| Offline support | ❌ | ✅ |
+
 ## Use Cases
 
 - Bootstrapping .NET apps without requiring users to install .NET
 - Isolated runtime environments
 - Self-updating applications that download their own runtime
+- Offline/air-gapped deployments (with pre-packaged layout)
 
 ## License
 

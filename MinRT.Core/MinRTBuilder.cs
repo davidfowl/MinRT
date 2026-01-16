@@ -25,6 +25,7 @@ public sealed class MinRTBuilder
     private string? _cacheDirectory;
     private string? _appPath;
     private string? _runtimeVersion;
+    private string? _layoutPath;  // Use existing layout instead of downloading
     private readonly List<string> _probingPaths = [];
     private readonly HashSet<SharedFramework> _sharedFrameworks = [SharedFramework.NetCore];
 
@@ -112,7 +113,17 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Build the runtime context - downloads runtime/apphost and patches apphost
+    /// Use an existing runtime layout instead of downloading.
+    /// The layout should have host/fxr/ and shared/ directories.
+    /// </summary>
+    public MinRTBuilder WithLayout(string layoutPath)
+    {
+        _layoutPath = layoutPath;
+        return this;
+    }
+
+    /// <summary>
+    /// Build the runtime context - downloads runtime/apphost (or uses existing layout) and patches apphost
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
     {
@@ -134,14 +145,37 @@ public sealed class MinRTBuilder
         var paths = new CachePaths(_cacheDirectory);
         paths.EnsureDirectoriesExist();
 
-        using var http = new HttpClient();
-        var downloader = new RuntimeDownloader(http, paths);
+        string runtimePath;
+        string appHostTemplate;
 
-        // 1. Download runtime (and shared frameworks)
-        var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
-
-        // 2. Download apphost template
-        var appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+        if (!string.IsNullOrEmpty(_layoutPath))
+        {
+            // Use existing layout
+            runtimePath = _layoutPath;
+            
+            // Find apphost in layout or download it
+            var apphostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
+            var layoutAppHost = Path.Combine(_layoutPath, apphostName);
+            if (File.Exists(layoutAppHost))
+            {
+                appHostTemplate = layoutAppHost;
+            }
+            else
+            {
+                // Download apphost template only
+                using var http = new HttpClient();
+                var downloader = new RuntimeDownloader(http, paths);
+                appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+            }
+        }
+        else
+        {
+            // Download runtime and apphost
+            using var http = new HttpClient();
+            var downloader = new RuntimeDownloader(http, paths);
+            runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
+            appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+        }
 
         // 3. Create app directory and patch apphost
         var appFileName = Path.GetFileName(_appPath);
@@ -206,6 +240,52 @@ public sealed class MinRTBuilder
             }
         }
         return "9.0.0";
+    }
+
+    /// <summary>
+    /// Create a standalone runtime layout that can be distributed and used offline.
+    /// This downloads the runtime and copies it to the output directory.
+    /// </summary>
+    /// <param name="outputPath">Directory to create the layout in</param>
+    public async Task CreateLayoutAsync(string outputPath, CancellationToken ct = default)
+    {
+        _runtimeIdentifier ??= RuntimeIdentifierHelper.GetCurrent();
+        _cacheDirectory ??= GetDefaultCacheDirectory();
+        _targetFramework ??= "net9.0";
+        _runtimeVersion ??= GetDefaultRuntimeVersion(_targetFramework);
+
+        var paths = new CachePaths(_cacheDirectory);
+        paths.EnsureDirectoriesExist();
+
+        using var http = new HttpClient();
+        var downloader = new RuntimeDownloader(http, paths);
+
+        // Download runtime to cache
+        var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
+
+        // Copy to output directory
+        Directory.CreateDirectory(outputPath);
+        CopyDirectory(runtimePath, outputPath);
+
+        // Also copy apphost template
+        var appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+        var appHostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
+        File.Copy(appHostTemplate, Path.Combine(outputPath, appHostName), overwrite: true);
+    }
+
+    private static void CopyDirectory(string sourceDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (var dir in Directory.GetDirectories(sourceDir))
+        {
+            CopyDirectory(dir, Path.Combine(destDir, Path.GetFileName(dir)));
+        }
     }
 
     private Dictionary<string, string> BuildAssemblyPaths()

@@ -92,7 +92,7 @@ MinRT/
 ## API
 
 ```csharp
-// Console app
+// Download runtime and run app
 var context = await new MinRTBuilder()
     .WithAppPath("myapp.dll")
     .WithRuntimeVersion("10.0.0")
@@ -100,7 +100,7 @@ var context = await new MinRTBuilder()
 
 var exitCode = context.Run(args);
 
-// ASP.NET Core app
+// Include ASP.NET Core
 var context = await new MinRTBuilder()
     .WithAppPath("webapp.dll")
     .WithRuntimeVersion("10.0.0")
@@ -109,7 +109,41 @@ var context = await new MinRTBuilder()
     .BuildAsync();
 
 var exitCode = context.Run(args);
+
+// Create a portable runtime layout (for distribution)
+await new MinRTBuilder()
+    .WithRuntimeVersion("10.0.0")
+    .WithAspNetCore()
+    .CreateLayoutAsync("./my-runtime");
+
+// Use a pre-existing layout (no download)
+var context = await new MinRTBuilder()
+    .WithAppPath("myapp.dll")
+    .WithLayout("./my-runtime")
+    .BuildAsync();
+
+context.Run();
 ```
+
+## Runtime Layout
+
+When you create a layout, it produces a self-contained runtime:
+
+```
+my-runtime/
+├── apphost.exe           # Template apphost (will be patched)
+├── host/
+│   └── fxr/10.0.0/
+│       └── hostfxr.dll
+└── shared/
+    ├── Microsoft.NETCore.App/10.0.0/
+    └── Microsoft.AspNetCore.App/10.0.0/  # if WithAspNetCore()
+```
+
+This layout can be:
+- Shipped alongside your application
+- Downloaded on-demand
+- Cached locally for subsequent runs
 
 ## Status
 
@@ -119,5 +153,7 @@ var exitCode = context.Run(args);
 - [x] Execute via DOTNET_ROOT
 - [x] ASP.NET Core shared framework
 - [x] Cross-platform (Windows, Linux)
+- [x] Create portable runtime layout
+- [x] Use pre-existing layout
 - [ ] Additional shared frameworks (Windows Desktop, etc.)
 - [ ] NuGet package dependency resolution
