@@ -83,6 +83,16 @@ int exitCode = await context.RunAsync(args);
 
 The app DLL and config files are copied into the apphost directory because the apphost binary has a 64-character limit for the embedded path. Each unique source path gets its own directory (based on path hash).
 
+## Runtime Sizes
+
+Approximate sizes for .NET 10 (win-x64):
+
+| | Unzipped | Zipped |
+|---|---|---|
+| Base runtime only | ~77 MB | ~35 MB |
+| + ASP.NET Core | +29 MB | +13 MB |
+| **Total with ASP.NET** | **~105 MB** | **~48 MB** |
+
 ## Requirements
 
 - None! That's the point.
