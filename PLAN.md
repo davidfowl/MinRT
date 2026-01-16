@@ -176,8 +176,11 @@ This layout can be:
 - [x] Create portable runtime layout
 - [x] Use pre-existing layout
 
-### Part 2: NuGet AssemblyLoadContext (Managed) 🔲
-- [ ] Design and implement
+### Part 2: NuGet AssemblyLoadContext (Managed) 🔄
+- [x] Design API
+- [ ] Implement NuGetAssemblyLoader
+- [ ] Test with simple package
+- [ ] Test with transitive dependencies
 
 ---
 
@@ -185,89 +188,170 @@ This layout can be:
 
 ### Overview
 
-A managed library that provides runtime NuGet package resolution and loading via a custom `AssemblyLoadContext`. This runs inside .NET (bootstrapped by MinRT) and handles dynamic package loading without deps.json.
+A managed library that provides runtime NuGet package resolution and loading via a custom `AssemblyLoadContext`. Works like `dotnet restore` but programmatic - no MSBuild, no project files, just packages.
 
-### Architecture
+### Why This Exists
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  MinRT.Core (Native AOT)                                        │
-│  - Downloads .NET runtime                                       │
-│  - Downloads managed host package                               │
-│  - Executes host.dll                                            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Managed Host (runs in downloaded .NET)                         │
-│  - Uses NuGetLoadContext                                        │
-│  - Full NuGet resolution (NuGet.Protocol)                       │
-│  - Downloads and resolves packages                              │
-│  - Creates AssemblyLoadContext with custom resolver             │
-│  - Loads and runs the actual application                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Application (loaded via ALC)                                   │
-│  - All deps resolved at runtime                                 │
-│  - No build-time dependency resolution needed                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Why Two Tiers?
-
-| Concern | MinRT.Core | NuGetLoadContext |
-|---------|------------|------------------|
+| Concern | MinRT.Core | MinRT.NuGet |
+|---------|------------|-------------|
 | AOT Compatible | ✅ Required | ❌ Not needed |
 | NuGet Resolution | ❌ Too complex | ✅ Full support |
-| Dependencies | Zero | Can use NuGet.Protocol |
+| Dependencies | Zero | NuGet.Protocol, NuGet.Resolver |
 | Runs in | Native process | .NET runtime |
 
-MinRT.Core stays minimal and AOT-compatible. Complex NuGet resolution moves to managed code where we have full .NET capabilities.
+MinRT.Core stays minimal and AOT-compatible. Complex NuGet resolution moves to managed code.
 
-### API (Sketch)
+### API
 
 ```csharp
-// In the managed host application
-var context = new NuGetLoadContext()
-    .WithFeed("https://api.nuget.org/v3/index.json")
-    .WithPackage("Aspire.Hosting", "9.0.0")
-    .WithPackage("Aspire.Hosting.AppHost", "9.0.0")
+// Simple usage
+var alc = await NuGetAssemblyLoader.CreateBuilder()
+    .AddPackage("Newtonsoft.Json", "13.0.3")
     .WithTargetFramework("net9.0")
-    .WithCacheDirectory(".nuget-cache");
+    .BuildAsync();
 
-await context.ResolveAsync();  // Download + resolve transitive deps
+var assembly = alc.LoadAssembly("Newtonsoft.Json");
 
-// Load assembly from resolved packages
-var assembly = context.LoadFromPackage("Aspire.Hosting.AppHost");
+// Full-featured usage
+var alc = await NuGetAssemblyLoader.CreateBuilder()
+    // Package references
+    .AddPackage("Microsoft.Extensions.Logging", "9.0.0")
+    .AddPackage("Serilog", "4.0.0")
+    .AddPackageRange("Newtonsoft.Json", "[13.0.0, 14.0.0)")
+    
+    // Feed configuration
+    .AddFeed("https://api.nuget.org/v3/index.json")
+    .AddFeed("https://pkgs.dev.azure.com/org/_packaging/feed/nuget/v3/index.json", 
+             "MyFeed", username, password)
+    .WithNuGetConfig("./nuget.config")  // Or load from config file
+    
+    // Resolution settings
+    .WithTargetFramework("net9.0")
+    .WithDependencyBehavior(DependencyBehavior.Lowest)  // Like NuGet default
+    .WithPackagesDirectory("./packages")
+    
+    // Diagnostics
+    .WithLogger(loggerFactory)
+    
+    .BuildAsync();
 
-// Or run an entry point
-context.Run("Aspire.Hosting.AppHost", args);
+// Use the loaded assemblies
+var type = alc.GetType("Newtonsoft.Json", "Newtonsoft.Json.JsonConvert");
+var instance = alc.CreateInstance("MyLib", "MyLib.MyClass", arg1, arg2);
+```
+
+### Resolution Algorithm
+
+Matches SDK/NuGet restore behavior:
+
+1. **Collect Dependencies** - BFS traversal of dependency graph
+   - Query each feed for package metadata
+   - Collect all transitive dependencies
+   - Respect version ranges from each package
+
+2. **Resolve Conflicts** - Using NuGet.Resolver
+   - `DependencyBehavior.Lowest` (default) - lowest version that satisfies all constraints
+   - `DependencyBehavior.HighestMinor/HighestPatch` - for updates
+   - Nearest wins for diamond dependencies
+
+3. **Download & Extract** - Cache packages locally
+   - Standard NuGet folder layout: `{packages}/{id}/{version}/`
+   - Skip if already cached
+
+4. **Select Assets** - TFM-based selection
+   - Use `NuGetFrameworkUtility.GetNearest()` for best `lib/` folder
+   - Only managed assemblies (`.dll` in `lib/`)
+
+5. **Create ALC** - Map assembly names to paths
+   - Lazy loading on first `Assembly.Load()`
+   - Falls back to default context for framework assemblies
+
+### Cache Layout
+
+```
+{packagesDirectory}/
+├── newtonsoft.json/
+│   └── 13.0.3/
+│       ├── lib/
+│       │   ├── net6.0/
+│       │   │   └── Newtonsoft.Json.dll
+│       │   └── netstandard2.0/
+│       │       └── Newtonsoft.Json.dll
+│       └── newtonsoft.json.nuspec
+├── microsoft.extensions.logging/
+│   └── 9.0.0/
+│       └── ...
 ```
 
 ### Key Components
 
 ```
-MinRT/
-├── MinRT.Core/                    # Part 1 (existing, AOT)
-├── MinRT.NuGet/                   # Part 2 (new, managed)
-│   ├── NuGetLoadContext.cs        # Custom AssemblyLoadContext
-│   ├── NuGetLoadContextBuilder.cs # Fluent builder API
-│   └── PackageResolver.cs         # NuGet dependency resolution + download
+MinRT.NuGet/
+├── NuGetAssemblyLoader.cs      # Builder API + resolution logic
+│   ├── CreateBuilder()         # Entry point
+│   ├── AddPackage()            # Add package reference
+│   ├── AddFeed()               # Add package source
+│   ├── WithNuGetConfig()       # Load feeds from config
+│   ├── WithTargetFramework()   # Set TFM
+│   ├── WithPackagesDirectory() # Set cache location
+│   ├── WithLogger()            # Enable diagnostics
+│   └── BuildAsync()            # Resolve + download + create ALC
+│
+├── NuGetAssemblyLoadContext.cs # Custom ALC
+│   ├── LoadAssembly()          # Load by name
+│   ├── GetType()               # Get type from assembly
+│   ├── CreateInstance()        # Create instance of type
+│   └── Load()                  # Override for resolution
 ```
 
-### How It Works
+### Diagnostics
 
-1. **Resolve** - Use NuGet.Protocol to resolve dependency graph
-2. **Download** - Download all packages to local cache
-3. **Map** - Build assembly name → DLL path mapping from packages
-4. **Load** - Custom ALC intercepts `Assembly.Load()` and resolves from map
+With `ILogger` enabled:
+
+```
+info: NuGetAssemblyLoader[0]
+      Starting NuGet package resolution for 2 packages targeting net9.0
+dbug: NuGetAssemblyLoader[0]
+      Using 2 package sources
+dbug: NuGetAssemblyLoader[0]
+        Source: nuget.org (https://api.nuget.org/v3/index.json)
+        Source: MyFeed (https://pkgs.dev.azure.com/...)
+info: NuGetAssemblyLoader[0]
+      Resolving dependency graph...
+info: NuGetAssemblyLoader[0]
+      Found 15 packages in dependency graph
+info: NuGetAssemblyLoader[0]
+      Resolving version conflicts using Lowest strategy...
+info: NuGetAssemblyLoader[0]
+      Resolved to 12 packages
+dbug: NuGetAssemblyLoader[0]
+        Microsoft.Extensions.Logging 9.0.0
+        Microsoft.Extensions.Logging.Abstractions 9.0.0
+        ...
+info: NuGetAssemblyLoader[0]
+      Downloading packages to ./packages...
+dbug: NuGetAssemblyLoader[0]
+      Package Microsoft.Extensions.Logging 9.0.0 already cached
+dbug: NuGetAssemblyLoader[0]
+      Downloading Serilog 4.0.0...
+info: NuGetAssemblyLoader[0]
+      Loaded 12 assemblies
+info: NuGetAssemblyLoader[0]
+      NuGet assembly loader ready
+```
+
+### Limitations (By Design)
+
+- **No RID-specific assets** - Only portable `lib/` assemblies
+- **No native libraries** - Managed assemblies only
+- **No lock files** - Always resolves fresh (caches packages)
+- **No central package management** - Direct package references only
+- **No conditional dependencies** - Simple TFM matching only
 
 ### The ALC Resolver
 
 ```csharp
-public class NuGetLoadContext : AssemblyLoadContext
+public class NuGetAssemblyLoadContext : AssemblyLoadContext
 {
     private readonly Dictionary<string, string> _assemblyPaths;
 
@@ -284,9 +368,7 @@ public class NuGetLoadContext : AssemblyLoadContext
 
 ### Status
 
-- [x] Create MinRT.NuGet project
-- [x] Implement PackageResolver (NuGet.Protocol)
-- [x] Implement NuGetLoadContext
-- [ ] Test with simple package
-- [ ] Test with transitive dependencies
-- [ ] Test with Aspire packages
+- [x] Design API  
+- [x] Implement NuGetAssemblyLoader
+- [x] Test with simple package (Newtonsoft.Json)
+- [x] Test with transitive dependencies (Microsoft.Extensions.Logging - 6 packages)
