@@ -147,6 +147,7 @@ This layout can be:
 
 ## Status
 
+### Part 1: MinRT.Core (Native AOT Bootstrapper) ✅
 - [x] Download runtime from NuGet
 - [x] Download apphost from NuGet
 - [x] Patch apphost with app path
@@ -155,5 +156,118 @@ This layout can be:
 - [x] Cross-platform (Windows, Linux)
 - [x] Create portable runtime layout
 - [x] Use pre-existing layout
-- [ ] Additional shared frameworks (Windows Desktop, etc.)
-- [ ] NuGet package dependency resolution
+
+### Part 2: NuGet AssemblyLoadContext (Managed) 🔲
+- [ ] Design and implement
+
+---
+
+## Part 2: NuGet AssemblyLoadContext
+
+### Overview
+
+A managed library that provides runtime NuGet package resolution and loading via a custom `AssemblyLoadContext`. This runs inside .NET (bootstrapped by MinRT) and handles dynamic package loading without deps.json.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  MinRT.Core (Native AOT)                                        │
+│  - Downloads .NET runtime                                       │
+│  - Downloads managed host package                               │
+│  - Executes host.dll                                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Managed Host (runs in downloaded .NET)                         │
+│  - Uses NuGetLoadContext                                        │
+│  - Full NuGet resolution (NuGet.Protocol)                       │
+│  - Downloads and resolves packages                              │
+│  - Creates AssemblyLoadContext with custom resolver             │
+│  - Loads and runs the actual application                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Application (loaded via ALC)                                   │
+│  - All deps resolved at runtime                                 │
+│  - No build-time dependency resolution needed                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why Two Tiers?
+
+| Concern | MinRT.Core | NuGetLoadContext |
+|---------|------------|------------------|
+| AOT Compatible | ✅ Required | ❌ Not needed |
+| NuGet Resolution | ❌ Too complex | ✅ Full support |
+| Dependencies | Zero | Can use NuGet.Protocol |
+| Runs in | Native process | .NET runtime |
+
+MinRT.Core stays minimal and AOT-compatible. Complex NuGet resolution moves to managed code where we have full .NET capabilities.
+
+### API (Sketch)
+
+```csharp
+// In the managed host application
+var context = new NuGetLoadContext()
+    .WithFeed("https://api.nuget.org/v3/index.json")
+    .WithPackage("Aspire.Hosting", "9.0.0")
+    .WithPackage("Aspire.Hosting.AppHost", "9.0.0")
+    .WithTargetFramework("net9.0")
+    .WithCacheDirectory(".nuget-cache");
+
+await context.ResolveAsync();  // Download + resolve transitive deps
+
+// Load assembly from resolved packages
+var assembly = context.LoadFromPackage("Aspire.Hosting.AppHost");
+
+// Or run an entry point
+context.Run("Aspire.Hosting.AppHost", args);
+```
+
+### Key Components
+
+```
+MinRT/
+├── MinRT.Core/                    # Part 1 (existing, AOT)
+├── MinRT.NuGet/                   # Part 2 (new, managed)
+│   ├── NuGetLoadContext.cs        # Custom AssemblyLoadContext
+│   ├── NuGetLoadContextBuilder.cs # Fluent builder API
+│   └── PackageResolver.cs         # NuGet dependency resolution + download
+```
+
+### How It Works
+
+1. **Resolve** - Use NuGet.Protocol to resolve dependency graph
+2. **Download** - Download all packages to local cache
+3. **Map** - Build assembly name → DLL path mapping from packages
+4. **Load** - Custom ALC intercepts `Assembly.Load()` and resolves from map
+
+### The ALC Resolver
+
+```csharp
+public class NuGetLoadContext : AssemblyLoadContext
+{
+    private readonly Dictionary<string, string> _assemblyPaths;
+
+    protected override Assembly? Load(AssemblyName name)
+    {
+        if (_assemblyPaths.TryGetValue(name.Name!, out var path))
+        {
+            return LoadFromAssemblyPath(path);
+        }
+        return null; // Fall back to default
+    }
+}
+```
+
+### Status
+
+- [x] Create MinRT.NuGet project
+- [x] Implement PackageResolver (NuGet.Protocol)
+- [x] Implement NuGetLoadContext
+- [ ] Test with simple package
+- [ ] Test with transitive dependencies
+- [ ] Test with Aspire packages

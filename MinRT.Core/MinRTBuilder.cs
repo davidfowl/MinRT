@@ -132,9 +132,12 @@ public sealed class MinRTBuilder
             throw new InvalidOperationException("App path is required. Call WithAppPath() to set it.");
         }
 
-        if (!File.Exists(_appPath))
+        // Convert to absolute path for consistent behavior
+        var appPath = Path.GetFullPath(_appPath);
+
+        if (!File.Exists(appPath))
         {
-            throw new FileNotFoundException($"App not found: {_appPath}");
+            throw new FileNotFoundException($"App not found: {appPath}");
         }
 
         _targetFramework ??= "net9.0";
@@ -178,18 +181,18 @@ public sealed class MinRTBuilder
         }
 
         // 3. Create app directory and patch apphost
-        var appFileName = Path.GetFileName(_appPath);
-        var appDir = GetAppDirectory(paths, _appPath);
+        var appFileName = Path.GetFileName(appPath);
+        var appDir = GetAppDirectory(paths, appPath);
         Directory.CreateDirectory(appDir);
 
         var appHostPath = Path.Combine(appDir, GetAppHostName(appFileName));
         var appDllDest = Path.Combine(appDir, appFileName);
 
         // Copy app DLL next to apphost (apphost expects it relative to itself)
-        File.Copy(_appPath, appDllDest, overwrite: true);
+        File.Copy(appPath, appDllDest, overwrite: true);
 
         // Copy runtimeconfig.json if exists
-        var runtimeConfigSrc = Path.ChangeExtension(_appPath, ".runtimeconfig.json");
+        var runtimeConfigSrc = Path.ChangeExtension(appPath, ".runtimeconfig.json");
         if (File.Exists(runtimeConfigSrc))
         {
             var runtimeConfigDest = Path.Combine(appDir, Path.GetFileName(runtimeConfigSrc));
@@ -197,7 +200,7 @@ public sealed class MinRTBuilder
         }
 
         // Copy deps.json if exists
-        var depsSrc = Path.ChangeExtension(_appPath, ".deps.json");
+        var depsSrc = Path.ChangeExtension(appPath, ".deps.json");
         if (File.Exists(depsSrc))
         {
             var depsDest = Path.Combine(appDir, Path.GetFileName(depsSrc));
