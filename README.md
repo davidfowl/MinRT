@@ -1,6 +1,6 @@
 # MinRT - Minimal .NET Runtime Host
 
-A zero-dependency .NET runtime bootstrapper. Downloads the .NET runtime from NuGet and executes your app - no pre-installed .NET required.
+A zero-dependency, **Native AOT compatible** .NET runtime bootstrapper. Downloads the .NET runtime from NuGet and executes your app - no pre-installed .NET required.
 
 ## Quick Start
 
@@ -131,6 +131,14 @@ Approximate sizes for .NET 10 (win-x64):
 ## Requirements
 
 - None! That's the point.
+
+## Native AOT Compatible
+
+MinRT.Core is fully Native AOT compatible - no reflection, no dynamic code generation. You can compile your bootstrapper to a single native executable:
+
+```xml
+<PublishAot>true</PublishAot>
+```
 
 ## Two Modes
 
