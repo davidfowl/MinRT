@@ -1,7 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace MinRT.Core;
 
@@ -12,17 +12,20 @@ public sealed class MinRTContext
 {
     private readonly string _runtimePath;
     private readonly string _runtimeVersion;
+    private readonly string _appHostPath;
     private readonly Dictionary<string, string> _assemblyPaths;
     private readonly List<string> _probingPaths;
 
     internal MinRTContext(
         string runtimePath,
         string runtimeVersion,
+        string appHostPath,
         Dictionary<string, string> assemblyPaths,
         List<string> probingPaths)
     {
         _runtimePath = runtimePath;
         _runtimeVersion = runtimeVersion;
+        _appHostPath = appHostPath;
         _assemblyPaths = assemblyPaths;
         _probingPaths = probingPaths;
     }
@@ -38,143 +41,69 @@ public sealed class MinRTContext
     public string RuntimeVersion => _runtimeVersion;
 
     /// <summary>
+    /// Path to the patched apphost executable
+    /// </summary>
+    public string AppHostPath => _appHostPath;
+
+    /// <summary>
     /// Resolved assembly paths (assembly name -> full path)
     /// </summary>
     public IReadOnlyDictionary<string, string> AssemblyPaths => _assemblyPaths;
 
     /// <summary>
-    /// Run a managed entry point
+    /// Run the application
     /// </summary>
-    public int Run(string entryAssembly, string[]? args = null)
+    public int Run(string[]? args = null)
     {
-        var entryPath = ResolveAssemblyPath(entryAssembly);
-        return RunWithHostFxr(entryPath, args);
+        var psi = new ProcessStartInfo
+        {
+            FileName = _appHostPath,
+            UseShellExecute = false,
+        };
+
+        // Set DOTNET_ROOT so apphost finds our downloaded runtime
+        psi.Environment["DOTNET_ROOT"] = _runtimePath;
+
+        if (args is not null)
+        {
+            foreach (var arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+        }
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start process");
+
+        process.WaitForExit();
+        return process.ExitCode;
     }
 
     /// <summary>
-    /// Run a managed entry point async
+    /// Run the application async
     /// </summary>
-    public Task<int> RunAsync(string entryAssembly, string[]? args = null, CancellationToken ct = default)
+    public async Task<int> RunAsync(string[]? args = null, CancellationToken ct = default)
     {
-        // hostfxr_run_app is blocking, so run on thread pool
-        return Task.Run(() => Run(entryAssembly, args), ct);
-    }
-
-    private string ResolveAssemblyPath(string assemblyName)
-    {
-        // If it's already a full path, use it
-        if (Path.IsPathRooted(assemblyName) && File.Exists(assemblyName))
+        var psi = new ProcessStartInfo
         {
-            return assemblyName;
-        }
+            FileName = _appHostPath,
+            UseShellExecute = false,
+        };
 
-        // Try exact match in assembly paths
-        if (_assemblyPaths.TryGetValue(assemblyName, out var path))
-        {
-            return path;
-        }
+        psi.Environment["DOTNET_ROOT"] = _runtimePath;
 
-        // Try without extension
-        var nameWithoutExt = Path.GetFileNameWithoutExtension(assemblyName);
-        if (_assemblyPaths.TryGetValue(nameWithoutExt, out path))
+        if (args is not null)
         {
-            return path;
-        }
-
-        // Search probing paths
-        foreach (var probingPath in _probingPaths)
-        {
-            var candidate = Path.Combine(probingPath, assemblyName);
-            if (File.Exists(candidate))
+            foreach (var arg in args)
             {
-                return candidate;
-            }
-
-            // Try with .dll extension
-            if (!assemblyName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            {
-                candidate = Path.Combine(probingPath, assemblyName + ".dll");
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
+                psi.ArgumentList.Add(arg);
             }
         }
 
-        throw new FileNotFoundException($"Assembly not found: {assemblyName}");
-    }
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start process");
 
-    private int RunWithHostFxr(string entryPath, string[]? args)
-    {
-        var hostfxrName = GetHostFxrName();
-        var hostfxrPath = Path.Combine(_runtimePath, "host", "fxr", _runtimeVersion, hostfxrName);
-
-        if (!File.Exists(hostfxrPath))
-        {
-            throw new FileNotFoundException($"hostfxr not found at {hostfxrPath}");
-        }
-
-        // Load hostfxr
-        NativeLibrary.Load(hostfxrPath);
-
-        // Build argv
-        var argv = args is null || args.Length == 0
-            ? new[] { entryPath }
-            : new[] { entryPath }.Concat(args).ToArray();
-
-        unsafe
-        {
-            // On Windows: UTF-16, on Unix: UTF-8
-            nint hostPathPtr = IntPtr.Zero;
-            nint dotnetRootPtr = IntPtr.Zero;
-
-            try
-            {
-                if (OperatingSystem.IsWindows())
-                {
-                    hostPathPtr = Marshal.StringToHGlobalUni(_runtimePath);
-                    dotnetRootPtr = Marshal.StringToHGlobalUni(_runtimePath);
-                }
-                else
-                {
-                    hostPathPtr = Marshal.StringToHGlobalAnsi(_runtimePath);
-                    dotnetRootPtr = Marshal.StringToHGlobalAnsi(_runtimePath);
-                }
-
-                var parameters = new HostFxrImports.hostfxr_initialize_parameters
-                {
-                    size = sizeof(HostFxrImports.hostfxr_initialize_parameters),
-                    host_path = hostPathPtr,
-                    dotnet_root = dotnetRootPtr
-                };
-
-                var err = HostFxrImports.Initialize(argv.Length, argv, ref parameters, out var handle);
-                if (err < 0)
-                {
-                    throw new InvalidOperationException($"hostfxr_initialize failed with error code: 0x{err:X8}");
-                }
-
-                try
-                {
-                    return HostFxrImports.Run(handle);
-                }
-                finally
-                {
-                    HostFxrImports.Close(handle);
-                }
-            }
-            finally
-            {
-                if (hostPathPtr != IntPtr.Zero) Marshal.FreeHGlobal(hostPathPtr);
-                if (dotnetRootPtr != IntPtr.Zero) Marshal.FreeHGlobal(dotnetRootPtr);
-            }
-        }
-    }
-
-    private static string GetHostFxrName()
-    {
-        if (OperatingSystem.IsWindows()) return "hostfxr.dll";
-        if (OperatingSystem.IsMacOS()) return "libhostfxr.dylib";
-        return "libhostfxr.so";
+        await process.WaitForExitAsync(ct);
+        return process.ExitCode;
     }
 }

@@ -5,17 +5,25 @@ namespace MinRT.Core;
 
 /// <summary>
 /// Fluent builder for constructing a runnable .NET context.
+/// Downloads runtime and apphost from NuGet, patches apphost, ready to execute.
 /// </summary>
 public sealed class MinRTBuilder
 {
     private string? _targetFramework;
     private string? _runtimeIdentifier;
     private string? _cacheDirectory;
-    private readonly List<PackageReference> _packages = [];
-    private readonly List<string> _probingPaths = [];
-    private RuntimeMode _runtimeMode = RuntimeMode.Download;
+    private string? _appPath;
     private string? _runtimeVersion;
-    private string? _customRuntimePath;
+    private readonly List<string> _probingPaths = [];
+
+    /// <summary>
+    /// Path to the application DLL to run (required)
+    /// </summary>
+    public MinRTBuilder WithAppPath(string appPath)
+    {
+        _appPath = appPath;
+        return this;
+    }
 
     /// <summary>
     /// Target framework (e.g., "net9.0", "net10.0")
@@ -28,6 +36,7 @@ public sealed class MinRTBuilder
 
     /// <summary>
     /// Runtime identifier (e.g., "win-x64", "linux-x64", "osx-arm64")
+    /// Auto-detected if not specified.
     /// </summary>
     public MinRTBuilder WithRuntimeIdentifier(string rid)
     {
@@ -36,11 +45,12 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Add a NuGet package reference
+    /// Runtime version to download (e.g., "9.0.0", "10.0.0")
+    /// Derived from target framework if not specified.
     /// </summary>
-    public MinRTBuilder AddPackageReference(string packageId, string version)
+    public MinRTBuilder WithRuntimeVersion(string version)
     {
-        _packages.Add(new PackageReference(packageId, version));
+        _runtimeVersion = version;
         return this;
     }
 
@@ -54,36 +64,6 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Use the system-installed .NET runtime (DOTNET_ROOT or default location).
-    /// NOT RECOMMENDED - prefer UseDownloadedRuntime for isolation.
-    /// </summary>
-    public MinRTBuilder UseSystemRuntime()
-    {
-        _runtimeMode = RuntimeMode.System;
-        return this;
-    }
-
-    /// <summary>
-    /// Download runtime from NuGet if not cached (default)
-    /// </summary>
-    public MinRTBuilder UseDownloadedRuntime(string? version = null)
-    {
-        _runtimeMode = RuntimeMode.Download;
-        _runtimeVersion = version;
-        return this;
-    }
-
-    /// <summary>
-    /// Use runtime at a specific path
-    /// </summary>
-    public MinRTBuilder UseRuntimeAt(string path)
-    {
-        _runtimeMode = RuntimeMode.Custom;
-        _customRuntimePath = path;
-        return this;
-    }
-
-    /// <summary>
     /// Root directory for all caching, downloads, and temp files.
     /// Default: ~/.minrt
     /// 
@@ -91,7 +71,7 @@ public sealed class MinRTBuilder
     ///   {cacheDirectory}/runtimes/   - Downloaded .NET runtimes
     ///   {cacheDirectory}/packages/   - Extracted NuGet packages
     ///   {cacheDirectory}/downloads/  - Temporary .nupkg files
-    ///   {cacheDirectory}/temp/       - Other temporary files
+    ///   {cacheDirectory}/apphosts/   - Patched apphost executables
     /// </summary>
     public MinRTBuilder WithCacheDirectory(string path)
     {
@@ -100,54 +80,91 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Build the runtime context - downloads packages and runtime as needed
+    /// Build the runtime context - downloads runtime/apphost and patches apphost
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
     {
+        if (string.IsNullOrEmpty(_appPath))
+        {
+            throw new InvalidOperationException("App path is required. Call WithAppPath() to set it.");
+        }
+
+        if (!File.Exists(_appPath))
+        {
+            throw new FileNotFoundException($"App not found: {_appPath}");
+        }
+
         _targetFramework ??= "net9.0";
         _runtimeIdentifier ??= RuntimeIdentifierHelper.GetCurrent();
         _cacheDirectory ??= GetDefaultCacheDirectory();
+        _runtimeVersion ??= GetDefaultRuntimeVersion(_targetFramework);
 
-        // Ensure cache directories exist
         var paths = new CachePaths(_cacheDirectory);
         paths.EnsureDirectoriesExist();
 
-        // 1. Resolve runtime path
-        var (runtimePath, runtimeVersion) = await ResolveRuntimeAsync(paths, ct);
-
-        // 2. Build assembly paths from probing paths (package resolution TODO)
-        var assemblyPaths = BuildAssemblyPaths();
-
-        return new MinRTContext(runtimePath, runtimeVersion, assemblyPaths, [.. _probingPaths]);
-    }
-
-    private async Task<(string path, string version)> ResolveRuntimeAsync(CachePaths paths, CancellationToken ct)
-    {
-        return _runtimeMode switch
-        {
-            RuntimeMode.System => ResolveSystemRuntime(),
-            RuntimeMode.Custom => (_customRuntimePath!, _runtimeVersion ?? "unknown"),
-            RuntimeMode.Download => await DownloadRuntimeAsync(paths, ct),
-            _ => throw new InvalidOperationException($"Unknown runtime mode: {_runtimeMode}")
-        };
-    }
-
-    private async Task<(string path, string version)> DownloadRuntimeAsync(CachePaths paths, CancellationToken ct)
-    {
-        // Determine version - use specified or detect from target framework
-        var version = _runtimeVersion ?? GetDefaultRuntimeVersion(_targetFramework!);
-        var rid = _runtimeIdentifier!;
-
         using var http = new HttpClient();
         var downloader = new RuntimeDownloader(http, paths);
-        
-        var runtimePath = await downloader.EnsureRuntimeAsync(version, rid, ct);
-        return (runtimePath, version);
+
+        // 1. Download runtime
+        var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, ct);
+
+        // 2. Download apphost template
+        var appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+
+        // 3. Create app directory and patch apphost
+        var appFileName = Path.GetFileName(_appPath);
+        var appDir = GetAppDirectory(paths, _appPath);
+        Directory.CreateDirectory(appDir);
+
+        var appHostPath = Path.Combine(appDir, GetAppHostName(appFileName));
+        var appDllDest = Path.Combine(appDir, appFileName);
+
+        // Copy app DLL next to apphost (apphost expects it relative to itself)
+        File.Copy(_appPath, appDllDest, overwrite: true);
+
+        // Copy runtimeconfig.json if exists
+        var runtimeConfigSrc = Path.ChangeExtension(_appPath, ".runtimeconfig.json");
+        if (File.Exists(runtimeConfigSrc))
+        {
+            var runtimeConfigDest = Path.Combine(appDir, Path.GetFileName(runtimeConfigSrc));
+            File.Copy(runtimeConfigSrc, runtimeConfigDest, overwrite: true);
+        }
+
+        // Copy deps.json if exists
+        var depsSrc = Path.ChangeExtension(_appPath, ".deps.json");
+        if (File.Exists(depsSrc))
+        {
+            var depsDest = Path.Combine(appDir, Path.GetFileName(depsSrc));
+            File.Copy(depsSrc, depsDest, overwrite: true);
+        }
+
+        // Patch apphost
+        if (!File.Exists(appHostPath))
+        {
+            AppHostPatcher.PatchAppHost(appHostTemplate, appHostPath, appFileName);
+        }
+
+        // 4. Build assembly paths from probing paths
+        var assemblyPaths = BuildAssemblyPaths();
+
+        return new MinRTContext(runtimePath, _runtimeVersion, appHostPath, assemblyPaths, [.. _probingPaths]);
+    }
+
+    private static string GetAppDirectory(CachePaths paths, string appPath)
+    {
+        // Create a unique directory per app based on the app's full path hash
+        var appHash = appPath.GetHashCode().ToString("X8");
+        return Path.Combine(paths.AppHosts, appHash);
+    }
+
+    private static string GetAppHostName(string appFileName)
+    {
+        var baseName = Path.GetFileNameWithoutExtension(appFileName);
+        return OperatingSystem.IsWindows() ? $"{baseName}.exe" : baseName;
     }
 
     private static string GetDefaultRuntimeVersion(string tfm)
     {
-        // Extract version from tfm like "net9.0" -> "9.0.0"
         if (tfm.StartsWith("net", StringComparison.OrdinalIgnoreCase))
         {
             var versionPart = tfm[3..];
@@ -156,35 +173,7 @@ public sealed class MinRTBuilder
                 return $"{ver.Major}.{ver.Minor}.0";
             }
         }
-        return "9.0.0"; // Default fallback
-    }
-
-    private static (string path, string version) ResolveSystemRuntime()
-    {
-        var dotnetRoot = GetSystemDotnetRoot();
-        if (dotnetRoot is null)
-        {
-            throw new InvalidOperationException("Could not find system .NET runtime. Set DOTNET_ROOT or install .NET.");
-        }
-
-        var fxrDir = Path.Combine(dotnetRoot, "host", "fxr");
-        if (!Directory.Exists(fxrDir))
-        {
-            throw new InvalidOperationException($"hostfxr directory not found at {fxrDir}");
-        }
-
-        var highestVersion = Directory.GetDirectories(fxrDir)
-            .Select(Path.GetFileName)
-            .Where(v => v is not null)
-            .OrderByDescending(v => v)
-            .FirstOrDefault();
-
-        if (highestVersion is null)
-        {
-            throw new InvalidOperationException($"No runtime versions found in {fxrDir}");
-        }
-
-        return (dotnetRoot, highestVersion);
+        return "9.0.0";
     }
 
     private Dictionary<string, string> BuildAssemblyPaths()
@@ -205,60 +194,12 @@ public sealed class MinRTBuilder
         return assemblyPaths;
     }
 
-    private static string? GetSystemDotnetRoot()
-    {
-        // Check DOTNET_ROOT environment variable
-        var dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT");
-        if (!string.IsNullOrEmpty(dotnetRoot) && Directory.Exists(dotnetRoot))
-        {
-            return dotnetRoot;
-        }
-
-        // Check default installation paths
-        if (OperatingSystem.IsWindows())
-        {
-            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var defaultPath = Path.Combine(programFiles, "dotnet");
-            if (Directory.Exists(defaultPath)) return defaultPath;
-        }
-        else
-        {
-            // Linux/macOS
-            if (Directory.Exists("/usr/share/dotnet")) return "/usr/share/dotnet";
-            if (Directory.Exists("/usr/local/share/dotnet")) return "/usr/local/share/dotnet";
-            
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var homeDotnet = Path.Combine(home, ".dotnet");
-            if (Directory.Exists(homeDotnet)) return homeDotnet;
-        }
-
-        // Search PATH
-        var pathEnv = Environment.GetEnvironmentVariable("PATH");
-        if (pathEnv is not null)
-        {
-            foreach (var dir in pathEnv.Split(Path.PathSeparator))
-            {
-                var dotnetExe = Path.Combine(dir, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-                if (File.Exists(dotnetExe))
-                {
-                    return Path.GetDirectoryName(dotnetExe);
-                }
-            }
-        }
-
-        return null;
-    }
-
     private static string GetDefaultCacheDirectory()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         return Path.Combine(home, ".minrt");
     }
 }
-
-public readonly record struct PackageReference(string Id, string Version);
-
-internal enum RuntimeMode { System, Download, Custom }
 
 /// <summary>
 /// Manages paths within the cache directory.
@@ -269,7 +210,7 @@ public sealed class CachePaths
     public string Runtimes { get; }
     public string Packages { get; }
     public string Downloads { get; }
-    public string Temp { get; }
+    public string AppHosts { get; }
 
     public CachePaths(string root)
     {
@@ -277,7 +218,7 @@ public sealed class CachePaths
         Runtimes = Path.Combine(root, "runtimes");
         Packages = Path.Combine(root, "packages");
         Downloads = Path.Combine(root, "downloads");
-        Temp = Path.Combine(root, "temp");
+        AppHosts = Path.Combine(root, "apphosts");
     }
 
     public void EnsureDirectoriesExist()
@@ -285,7 +226,7 @@ public sealed class CachePaths
         Directory.CreateDirectory(Runtimes);
         Directory.CreateDirectory(Packages);
         Directory.CreateDirectory(Downloads);
-        Directory.CreateDirectory(Temp);
+        Directory.CreateDirectory(AppHosts);
     }
 
     public string GetRuntimePath(string version, string rid) =>

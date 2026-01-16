@@ -14,8 +14,7 @@ namespace MinRT.Core;
 /// - System.*.dll managed assemblies
 /// - Microsoft.NETCore.App.deps.json and .runtimeconfig.json
 /// 
-/// Note: Microsoft.NETCore.App.Host.{rid} is NOT needed - it only contains
-/// apphost.exe templates used for single-file publish, not runtime hosting.
+/// Also handles Microsoft.NETCore.App.Host.{rid} for apphost template.
 /// </summary>
 public sealed class RuntimeDownloader
 {
@@ -57,6 +56,26 @@ public sealed class RuntimeDownloader
         }
 
         return runtimePath;
+    }
+
+    /// <summary>
+    /// Gets the path to the apphost template from the Host package.
+    /// Downloads the package if not already cached.
+    /// </summary>
+    public async Task<string> GetAppHostTemplateAsync(string version, string rid, CancellationToken ct = default)
+    {
+        var hostPackageId = $"Microsoft.NETCore.App.Host.{rid}";
+        var hostPackagePath = await _nuget.DownloadPackageAsync(hostPackageId, version, ct);
+
+        var apphostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
+        var apphostPath = Path.Combine(hostPackagePath, "runtimes", rid, "native", apphostName);
+
+        if (!File.Exists(apphostPath))
+        {
+            throw new FileNotFoundException($"apphost not found at {apphostPath}");
+        }
+
+        return apphostPath;
     }
 
     private static void SetExecutePermissions(string runtimePath, string version)

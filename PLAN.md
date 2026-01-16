@@ -1319,6 +1319,126 @@ Exit code: 0
 2. [x] Copy `.json` config files to shared dir ✅
 3. [x] Test with downloaded runtime ✅
 4. [x] Update PLAN with working solution ✅
-5. [ ] Implement `AddPackageReference()` - download and resolve NuGet packages
-6. [ ] Implement dependency resolution for transitive packages
-7. [ ] Add probing paths to assembly resolution
+5. [x] Cross-platform support (Windows + Linux) ✅
+6. [x] **Out-of-process execution using apphost** ✅
+7. [ ] Implement `AddPackageReference()` - download and resolve NuGet packages
+8. [ ] Implement dependency resolution for transitive packages
+9. [ ] Add probing paths to assembly resolution
+
+---
+
+## Current Architecture (Updated)
+
+MinRT now uses **out-of-process execution** with the standard .NET apphost:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MinRT.Core (can be AOT or managed)                                     │
+│                                                                         │
+│  MinRTBuilder                                                           │
+│  ├── WithAppPath("myapp.dll")         ← App to run                      │
+│  ├── WithRuntimeVersion("10.0.0")     ← Runtime version                 │
+│  ├── WithCacheDirectory("...")        ← Cache location                  │
+│  └── BuildAsync()                                                       │
+│      │                                                                  │
+│      ├── 1. Download Runtime from NuGet                                 │
+│      │   └── Microsoft.NETCore.App.Runtime.{rid}                        │
+│      │                                                                  │
+│      ├── 2. Download AppHost from NuGet                                 │
+│      │   └── Microsoft.NETCore.App.Host.{rid}                           │
+│      │                                                                  │
+│      ├── 3. Patch AppHost with app path                                 │
+│      │   └── Replace placeholder hash with "myapp.dll"                  │
+│      │                                                                  │
+│      └── 4. Return MinRTContext                                         │
+│                                                                         │
+│  MinRTContext                                                           │
+│  ├── RuntimePath      → Downloaded runtime location                     │
+│  ├── AppHostPath      → Patched apphost executable                      │
+│  └── Run(args)        → Spawn process with DOTNET_ROOT set              │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Out-of-Process?
+
+Originally considered in-process hostfxr loading, but **out-of-process is better**:
+
+1. **No runtime conflicts** - Native AOT and CoreCLR don't share a process
+2. **Clean separation** - Matches `dotnet exec` behavior exactly
+3. **Process isolation** - Crashes don't affect the launcher
+4. **Easier debugging** - Standard .NET debugging works
+5. **Future-proof** - No risk from runtime internal changes
+
+### AppHost Patching
+
+The apphost binary contains a placeholder hash that gets replaced with the app path:
+
+```
+Placeholder: c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2 (64 chars)
+Replacement: myapp.dll\0\0\0\0\0\0\0\0\0\0\0\0... (null-padded to 64 chars)
+```
+
+This is exactly what the .NET SDK does when building an application.
+
+### Cache Layout (Updated)
+
+```
+{cacheDirectory}/
+├── runtimes/                    # Downloaded .NET runtimes
+│   └── 10.0.0-win-x64/
+│       ├── host/fxr/10.0.0/hostfxr.dll
+│       └── shared/Microsoft.NETCore.App/10.0.0/...
+├── packages/                    # Extracted NuGet packages  
+│   ├── microsoft.netcore.app.runtime.win-x64/10.0.0/
+│   └── microsoft.netcore.app.host.win-x64/10.0.0/
+├── downloads/                   # Temporary .nupkg files
+└── apphosts/                    # Patched apphost executables
+    └── {hash}/                  # Per-app directory
+        ├── myapp.exe            # Patched apphost
+        ├── myapp.dll            # App assembly (copied)
+        ├── myapp.runtimeconfig.json
+        └── myapp.deps.json
+```
+
+### Simplified API
+
+```csharp
+// Build and run - zero external dependencies!
+var context = await new MinRTBuilder()
+    .WithAppPath("hello.dll")
+    .WithRuntimeVersion("10.0.0")
+    .WithCacheDirectory(".minrt-cache")
+    .BuildAsync();
+
+// Downloads runtime + apphost, patches apphost, returns ready-to-run context
+var exitCode = context.Run(args);
+```
+
+### Files
+
+- **MinRT.Core/MinRTBuilder.cs** - Fluent builder, orchestrates download/patch
+- **MinRT.Core/MinRTContext.cs** - Runs patched apphost with DOTNET_ROOT
+- **MinRT.Core/AppHostPatcher.cs** - Binary patching of apphost placeholder
+- **MinRT.Core/RuntimeDownloader.cs** - Downloads runtime + apphost from NuGet
+- **MinRT.Core/NuGetDownloader.cs** - AOT-safe NuGet package downloader
+
+### Test Results ✅
+
+```
+> dotnet run --project MinRT.TestHost -- test-artifacts\hello.dll
+
+App: D:\dev\git\MinRT\test-artifacts\hello.dll
+Cache: D:\dev\git\.minrt-cache
+
+Building MinRT context...
+Runtime: D:\dev\git\.minrt-cache\runtimes\10.0.0-win-x64
+AppHost: D:\dev\git\.minrt-cache\apphosts\8DFEF67A\hello.exe
+---
+Hello, World!
+Runtime: 10.0.2
+---
+Exit code: 0
+```
+
+**SUCCESS!** MinRT downloads the runtime, downloads the apphost, patches it, and runs the app - all with zero pre-installed .NET!
