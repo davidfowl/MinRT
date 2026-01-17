@@ -28,6 +28,12 @@ jobs:
       - name: Publish hello-web app
         run: dotnet publish hello-web -c Release -o artifacts/hello-web
 
+      - name: Create pre-built runtime layout (for airgap test)
+        run: |
+          # Create a runtime layout that can be used offline
+          ./artifacts/testhost-linux-x64/MinRT.TestHost --create-layout artifacts/runtime-layout --aspnet
+          ls -la artifacts/runtime-layout/
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -127,6 +133,65 @@ jobs:
           # Verify response
           if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
             echo "✓ ASP.NET Core app working!"
+          else
+            echo "✗ Unexpected response"
+            exit 1
+          fi
+        timeout-minutes: 5
+
+  # Airgap/Offline E2E on Linux (NO .NET, NO NuGet access)
+  airgap-e2e-linux:
+    runs-on: ubuntu-latest
+    needs: build-linux
+    # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: artifacts/
+
+      - name: Make TestHost executable
+        run: chmod +x artifacts/testhost-linux-x64/MinRT.TestHost
+
+      - name: Show runtime layout contents
+        run: |
+          echo "Pre-built runtime layout:"
+          ls -la artifacts/runtime-layout/
+          echo ""
+          echo "Shared frameworks:"
+          ls -la artifacts/runtime-layout/shared/
+
+      - name: Run hello app via MinRT (offline with pre-built layout)
+        run: |
+          cd artifacts
+          echo "Using --offline flag - any download attempt will fail"
+          ./testhost-linux-x64/MinRT.TestHost hello/hello.dll --layout runtime-layout --offline
+        timeout-minutes: 2
+
+      - name: Run hello-web app via MinRT (offline with pre-built layout)
+        run: |
+          cd artifacts
+          echo "Using --offline flag - any download attempt will fail"
+          # Start web app in background using pre-built layout
+          ./testhost-linux-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet --layout runtime-layout --offline &
+          APP_PID=$!
+          
+          # Wait for startup
+          echo "Waiting for app to start..."
+          sleep 10
+          
+          # Test the endpoint
+          echo "Testing http://localhost:5099..."
+          RESPONSE=$(curl -s --retry 5 --retry-delay 2 http://localhost:5099 || echo "CURL_FAILED")
+          echo "Response: $RESPONSE"
+          
+          # Kill the app
+          kill $APP_PID 2>/dev/null || true
+          
+          # Verify response
+          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+            echo "✓ ASP.NET Core app working in airgap mode!"
           else
             echo "✗ Unexpected response"
             exit 1

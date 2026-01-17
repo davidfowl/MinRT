@@ -26,6 +26,7 @@ public sealed class MinRTBuilder
     private string? _appPath;
     private string? _runtimeVersion;
     private string? _layoutPath;  // Use existing layout instead of downloading
+    private bool _requireOffline; // Fail if any download is attempted
     private readonly List<string> _probingPaths = [];
     private readonly HashSet<SharedFramework> _sharedFrameworks = [SharedFramework.NetCore];
 
@@ -124,6 +125,16 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
+    /// Require offline mode - fail if any download is attempted.
+    /// Use with WithLayout() to ensure only pre-built layouts are used.
+    /// </summary>
+    public MinRTBuilder RequireOffline()
+    {
+        _requireOffline = true;
+        return this;
+    }
+
+    /// <summary>
     /// Build the runtime context - downloads runtime/apphost (or uses existing layout) and patches apphost
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
@@ -164,19 +175,30 @@ public sealed class MinRTBuilder
             {
                 appHostTemplate = layoutAppHost;
             }
+            else if (_requireOffline)
+            {
+                throw new InvalidOperationException(
+                    $"Offline mode: apphost not found in layout at {layoutAppHost}. " +
+                    "Ensure the layout was created with CreateLayoutAsync() which includes the apphost.");
+            }
             else
             {
                 // Download apphost template only
                 using var http = new HttpClient();
-                var downloader = new RuntimeDownloader(http, paths);
+                var downloader = new RuntimeDownloader(http, paths, _requireOffline);
                 appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
             }
+        }
+        else if (_requireOffline)
+        {
+            throw new InvalidOperationException(
+                "Offline mode requires a pre-built layout. Call WithLayout() to specify a runtime layout path.");
         }
         else
         {
             // Download runtime and apphost
             using var http = new HttpClient();
-            var downloader = new RuntimeDownloader(http, paths);
+            var downloader = new RuntimeDownloader(http, paths, _requireOffline);
             runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
             appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
         }

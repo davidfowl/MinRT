@@ -22,12 +22,14 @@ public sealed class RuntimeDownloader
     private readonly HttpClient _http;
     private readonly CachePaths _paths;
     private readonly NuGetDownloader _nuget;
+    private readonly bool _requireOffline;
 
-    public RuntimeDownloader(HttpClient http, CachePaths paths)
+    public RuntimeDownloader(HttpClient http, CachePaths paths, bool requireOffline = false)
     {
         _http = http;
         _paths = paths;
-        _nuget = new NuGetDownloader(http, paths);
+        _requireOffline = requireOffline;
+        _nuget = new NuGetDownloader(http, paths, requireOffline);
     }
 
     /// <summary>

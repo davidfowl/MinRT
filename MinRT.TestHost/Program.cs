@@ -12,18 +12,21 @@ if (args.Length == 0)
     Console.WriteLine("  --layout <path>              Use existing runtime layout (no download)");
     Console.WriteLine("  --create-layout <path>       Create a runtime layout and exit");
     Console.WriteLine("  --probe <path>               Add a folder of DLLs to probing paths");
+    Console.WriteLine("  --offline                    Fail if any download is attempted (use with --layout)");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  MinRT.TestHost ./hello.dll");
     Console.WriteLine("  MinRT.TestHost ./hello-web.dll --aspnet");
     Console.WriteLine("  MinRT.TestHost --create-layout ./my-runtime --aspnet");
     Console.WriteLine("  MinRT.TestHost ./hello.dll --layout ./my-runtime");
+    Console.WriteLine("  MinRT.TestHost ./hello.dll --layout ./my-runtime --offline");
     Console.WriteLine("  MinRT.TestHost ./myapp.dll --probe ./libs");
     return 1;
 }
 
 // Parse args
 var includeAspNet = args.Contains("--aspnet");
+var requireOffline = args.Contains("--offline");
 var createLayoutIdx = Array.IndexOf(args, "--create-layout");
 var layoutIdx = Array.IndexOf(args, "--layout");
 
@@ -75,6 +78,7 @@ var dllPath = Path.GetFullPath(args[0]);
 
 Console.WriteLine($"App: {dllPath}");
 Console.WriteLine($"ASP.NET Core: {includeAspNet}");
+Console.WriteLine($"Offline: {requireOffline}");
 Console.WriteLine($"Probe paths: {probePaths.Count}");
 Console.WriteLine($"Cache: {cacheDir}");
 
@@ -87,6 +91,11 @@ var runBuilder = new MinRTBuilder()
 if (includeAspNet)
 {
     runBuilder.WithAspNetCore();
+}
+
+if (requireOffline)
+{
+    runBuilder.RequireOffline();
 }
 
 foreach (var probePath in probePaths)

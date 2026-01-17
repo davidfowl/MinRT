@@ -13,15 +13,17 @@ public sealed class NuGetDownloader
 {
     private readonly HttpClient _http;
     private readonly CachePaths _paths;
+    private readonly bool _requireOffline;
 
     // Well-known NuGet v3 service types
     private const string PackageBaseAddressType = "PackageBaseAddress/3.0.0";
     private const string DefaultNuGetSource = "https://api.nuget.org/v3/index.json";
 
-    public NuGetDownloader(HttpClient http, CachePaths paths)
+    public NuGetDownloader(HttpClient http, CachePaths paths, bool requireOffline = false)
     {
         _http = http;
         _paths = paths;
+        _requireOffline = requireOffline;
     }
 
     /// <summary>
@@ -36,6 +38,14 @@ public sealed class NuGetDownloader
         if (Directory.Exists(packagePath) && Directory.GetFiles(packagePath, "*.dll", SearchOption.AllDirectories).Length > 0)
         {
             return packagePath;
+        }
+
+        // Check if we're in offline mode
+        if (_requireOffline)
+        {
+            throw new InvalidOperationException(
+                $"Offline mode: Package {packageId} {version} not cached and download is not allowed. " +
+                "Use a pre-built layout with WithLayout() or ensure the cache is populated.");
         }
 
         // Get the package base address from NuGet service index
