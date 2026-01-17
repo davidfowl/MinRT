@@ -108,8 +108,8 @@ jobs:
       - name: Run hello-web app via MinRT
         run: |
           cd artifacts
-          # Start web app in background
-          ./testhost-linux-x64/MinRT.TestHost hello-web/hello-web.dll &
+          # Start web app in background (--aspnet enables ASP.NET Core framework)
+          ./testhost-linux-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet &
           APP_PID=$!
           
           # Wait for startup
@@ -181,9 +181,9 @@ jobs:
         run: |
           cd artifacts
           
-          # Start web app in background
+          # Start web app in background (--aspnet enables ASP.NET Core framework)
           $process = Start-Process -FilePath ".\testhost-win-x64\MinRT.TestHost.exe" `
-            -ArgumentList "hello-web\hello-web.dll" `
+            -ArgumentList "hello-web\hello-web.dll", "--aspnet" `
             -PassThru -NoNewWindow
           
           # Wait for startup
@@ -256,8 +256,8 @@ jobs:
       - name: Run hello-web app via MinRT
         run: |
           cd artifacts
-          # Start web app in background
-          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll &
+          # Start web app in background (--aspnet enables ASP.NET Core framework)
+          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet &
           APP_PID=$!
           
           # Wait for startup
