@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  # Job 1: Build all artifacts
-  build:
+  # Build Native AOT binaries on each platform
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,55 +19,71 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build solution
-        run: dotnet build --no-restore
-
-      # Build MinRT.TestHost as Native AOT for Linux
       - name: Publish TestHost (linux-x64)
-        run: |
-          dotnet publish MinRT.TestHost -c Release -r linux-x64 \
-            -o artifacts/testhost-linux-x64
+        run: dotnet publish MinRT.TestHost -c Release -r linux-x64 -o artifacts/testhost-linux-x64
 
-      # Build MinRT.TestHost as Native AOT for Windows
-      - name: Publish TestHost (win-x64)
-        run: |
-          dotnet publish MinRT.TestHost -c Release -r win-x64 \
-            -o artifacts/testhost-win-x64
-
-      # Build MinRT.TestHost as Native AOT for macOS
-      - name: Publish TestHost (osx-x64)
-        run: |
-          dotnet publish MinRT.TestHost -c Release -r osx-x64 \
-            -o artifacts/testhost-osx-x64
-
-      # Publish test apps as framework-dependent
       - name: Publish hello app
-        run: |
-          dotnet publish hello -c Release -o artifacts/hello
+        run: dotnet publish hello -c Release -o artifacts/hello
 
       - name: Publish hello-web app
-        run: |
-          dotnet publish hello-web -c Release -o artifacts/hello-web
+        run: dotnet publish hello-web -c Release -o artifacts/hello-web
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: minrt-artifacts
+          name: linux-artifacts
           path: artifacts/
 
-  # Job 2: Core E2E on Linux (NO .NET installed)
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Publish TestHost (win-x64)
+        run: dotnet publish MinRT.TestHost -c Release -r win-x64 -o artifacts/testhost-win-x64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: artifacts/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Publish TestHost (osx-x64)
+        run: dotnet publish MinRT.TestHost -c Release -r osx-x64 -o artifacts/testhost-osx-x64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: artifacts/
+
+  # Core E2E on Linux (NO .NET installed)
   core-e2e-linux:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build-linux
     # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: minrt-artifacts
+          name: linux-artifacts
           path: artifacts/
 
       - name: Make TestHost executable
@@ -117,17 +133,29 @@ jobs:
           fi
         timeout-minutes: 5
 
-  # Job 3: Core E2E on Windows (NO .NET installed)
+  # Core E2E on Windows (NO .NET installed)
   core-e2e-windows:
     runs-on: windows-latest
-    needs: build
+    needs: [build-windows, build-linux]
     # Intentionally NO setup-dotnet
     steps:
-      - name: Download artifacts
+      - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: minrt-artifacts
-          path: artifacts
+          name: windows-artifacts
+          path: artifacts/
+
+      - name: Download Linux artifacts (for test apps)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: linux-artifacts/
+
+      - name: Copy test apps
+        shell: pwsh
+        run: |
+          Copy-Item -Path linux-artifacts/hello -Destination artifacts/hello -Recurse
+          Copy-Item -Path linux-artifacts/hello-web -Destination artifacts/hello-web -Recurse
 
       - name: Verify no .NET installed
         shell: pwsh
@@ -183,17 +211,28 @@ jobs:
           }
         timeout-minutes: 5
 
-  # Job 4: Core E2E on macOS (NO .NET installed)
+  # Core E2E on macOS (NO .NET installed)
   core-e2e-macos:
     runs-on: macos-latest
-    needs: build
+    needs: [build-macos, build-linux]
     # Intentionally NO setup-dotnet
     steps:
-      - name: Download artifacts
+      - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
-          name: minrt-artifacts
+          name: macos-artifacts
           path: artifacts/
+
+      - name: Download Linux artifacts (for test apps)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: linux-artifacts/
+
+      - name: Copy test apps
+        run: |
+          cp -r linux-artifacts/hello artifacts/hello
+          cp -r linux-artifacts/hello-web artifacts/hello-web
 
       - name: Make TestHost executable
         run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
@@ -242,7 +281,7 @@ jobs:
           fi
         timeout-minutes: 5
 
-  # Job 5: NuGet Assembly Loader tests (xUnit)
+  # NuGet Assembly Loader tests (xUnit)
   nuget-tests:
     runs-on: ubuntu-latest
     steps:
