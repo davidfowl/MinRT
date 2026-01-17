@@ -1,5 +1,8 @@
 name: Update RID Graph
 
+# NOTE: This workflow requires "Allow GitHub Actions to create and approve pull requests" 
+# to be enabled in Settings > Actions > General > Workflow permissions
+
 on:
   schedule:
     # Run weekly on Monday at 6am UTC
