@@ -74,6 +74,13 @@ jobs:
       - name: Publish TestHost (osx-x64)
         run: dotnet publish MinRT.TestHost -c Release -r osx-x64 -o artifacts/testhost-osx-x64
 
+      - name: Create pre-built runtime layout (for airgap test)
+        run: |
+          # Create a runtime layout that can be used offline
+          chmod +x ./artifacts/testhost-osx-x64/MinRT.TestHost
+          ./artifacts/testhost-osx-x64/MinRT.TestHost --create-layout artifacts/runtime-layout-osx --aspnet
+          ls -la artifacts/runtime-layout-osx/
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -192,6 +199,76 @@ jobs:
           # Verify response
           if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
             echo "✓ ASP.NET Core app working in airgap mode!"
+          else
+            echo "✗ Unexpected response"
+            exit 1
+          fi
+        timeout-minutes: 5
+
+  # Airgap/Offline E2E on macOS (NO .NET, NO NuGet access)
+  airgap-e2e-macos:
+    runs-on: macos-latest
+    needs: [build-macos, build-linux]
+    # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-artifacts
+          path: artifacts/
+
+      - name: Download Linux artifacts (for test apps)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: linux-artifacts/
+
+      - name: Copy test apps
+        run: |
+          cp -r linux-artifacts/hello artifacts/hello
+          cp -r linux-artifacts/hello-web artifacts/hello-web
+
+      - name: Make TestHost executable
+        run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
+
+      - name: Show runtime layout contents
+        run: |
+          echo "Pre-built runtime layout:"
+          ls -la artifacts/runtime-layout-osx/
+          echo ""
+          echo "Shared frameworks:"
+          ls -la artifacts/runtime-layout-osx/shared/
+
+      - name: Run hello app via MinRT (offline with pre-built layout)
+        run: |
+          cd artifacts
+          echo "Using --offline flag - any download attempt will fail"
+          ./testhost-osx-x64/MinRT.TestHost hello/hello.dll --layout runtime-layout-osx --offline
+        timeout-minutes: 2
+
+      - name: Run hello-web app via MinRT (offline with pre-built layout)
+        run: |
+          cd artifacts
+          echo "Using --offline flag - any download attempt will fail"
+          # Start web app in background using pre-built layout
+          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet --layout runtime-layout-osx --offline &
+          APP_PID=$!
+          
+          # Wait for startup
+          echo "Waiting for app to start..."
+          sleep 10
+          
+          # Test the endpoint
+          echo "Testing http://localhost:5099..."
+          RESPONSE=$(curl -s --retry 5 --retry-delay 2 http://localhost:5099 || echo "CURL_FAILED")
+          echo "Response: $RESPONSE"
+          
+          # Kill the app
+          kill $APP_PID 2>/dev/null || true
+          
+          # Verify response
+          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+            echo "✓ ASP.NET Core app working in airgap mode on macOS!"
           else
             echo "✗ Unexpected response"
             exit 1
