@@ -146,8 +146,8 @@ jobs:
           # Kill the app
           kill $APP_PID 2>/dev/null || true
           
-          # Verify response
-          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+          # Verify response (POSIX-compatible)
+          if echo "$RESPONSE" | grep -q "Hello from ASP.NET Core"; then
             echo "✓ ASP.NET Core app working!"
           else
             echo "✗ Unexpected response"
@@ -224,8 +224,8 @@ jobs:
           # Kill the app
           kill $APP_PID 2>/dev/null || true
           
-          # Verify response
-          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+          # Verify response (POSIX-compatible)
+          if echo "$RESPONSE" | grep -q "Hello from ASP.NET Core"; then
             echo "✓ ASP.NET Core app working in airgap mode!"
           else
             echo "✗ Unexpected response"
