@@ -102,14 +102,17 @@ jobs:
       - name: Make TestHost executable
         run: chmod +x artifacts/testhost-linux-x64/MinRT.TestHost
 
-      - name: Verify no .NET installed
+      - name: Remove system .NET (prove MinRT works without it)
         run: |
-          echo "Checking that .NET is not installed..."
+          echo "Removing system .NET to prove MinRT works independently..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf ~/.dotnet
+          hash -r
           if command -v dotnet &> /dev/null; then
-            echo "WARNING: dotnet found in PATH, but continuing anyway"
-            dotnet --version || true
+            echo "✗ dotnet still found after removal"
+            exit 1
           else
-            echo "✓ No dotnet in PATH - this is expected"
+            echo "✓ System .NET removed successfully"
           fi
 
       - name: Run hello app via MinRT
@@ -299,16 +302,25 @@ jobs:
           Copy-Item -Path linux-artifacts/hello -Destination artifacts/hello -Recurse
           Copy-Item -Path linux-artifacts/hello-web -Destination artifacts/hello-web -Recurse
 
-      - name: Verify no .NET installed
+      - name: Remove system .NET (prove MinRT works without it)
         shell: pwsh
         run: |
-          Write-Host "Checking that .NET is not installed..."
+          Write-Host "Removing system .NET to prove MinRT works independently..."
+          # Remove .NET from common locations
+          if (Test-Path "C:\Program Files\dotnet") {
+            Remove-Item -Path "C:\Program Files\dotnet" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if (Test-Path "$env:USERPROFILE\.dotnet") {
+            Remove-Item -Path "$env:USERPROFILE\.dotnet" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          # Remove from PATH for this session
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*dotnet*' }) -join ';'
+          
           $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
           if ($dotnetPath) {
-            Write-Host "WARNING: dotnet found, but continuing anyway"
-            dotnet --version
+            Write-Host "WARNING: dotnet still found after removal attempt"
           } else {
-            Write-Host "✓ No dotnet in PATH - this is expected"
+            Write-Host "✓ System .NET removed successfully"
           }
 
       - name: Run hello app via MinRT
@@ -379,14 +391,16 @@ jobs:
       - name: Make TestHost executable
         run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
 
-      - name: Verify no .NET installed
+      - name: Remove system .NET (prove MinRT works without it)
         run: |
-          echo "Checking that .NET is not installed..."
+          echo "Removing system .NET to prove MinRT works independently..."
+          sudo rm -rf /usr/local/share/dotnet
+          sudo rm -rf ~/.dotnet
+          hash -r
           if command -v dotnet &> /dev/null; then
-            echo "WARNING: dotnet found in PATH, but continuing anyway"
-            dotnet --version || true
+            echo "WARNING: dotnet still found after removal attempt"
           else
-            echo "✓ No dotnet in PATH - this is expected"
+            echo "✓ System .NET removed successfully"
           fi
 
       - name: Run hello app via MinRT
