@@ -91,8 +91,24 @@ jobs:
   core-e2e-linux:
     runs-on: ubuntu-latest
     needs: build-linux
-    # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
+    # Use a minimal container WITHOUT .NET pre-installed
+    container: ubuntu:22.04
     steps:
+      - name: Install minimal dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl libicu70
+          echo "✓ Minimal container - no .NET installed"
+
+      - name: Verify no .NET installed
+        run: |
+          if command -v dotnet &> /dev/null; then
+            echo "✗ dotnet found - this should not happen in clean container"
+            exit 1
+          else
+            echo "✓ No .NET installed - clean container confirmed"
+          fi
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -101,19 +117,6 @@ jobs:
 
       - name: Make TestHost executable
         run: chmod +x artifacts/testhost-linux-x64/MinRT.TestHost
-
-      - name: Remove system .NET (prove MinRT works without it)
-        run: |
-          echo "Removing system .NET to prove MinRT works independently..."
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf ~/.dotnet
-          hash -r
-          if command -v dotnet &> /dev/null; then
-            echo "✗ dotnet still found after removal"
-            exit 1
-          else
-            echo "✓ System .NET removed successfully"
-          fi
 
       - name: Run hello app via MinRT
         run: |
@@ -153,8 +156,24 @@ jobs:
   airgap-e2e-linux:
     runs-on: ubuntu-latest
     needs: build-linux
-    # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
+    # Use a minimal container WITHOUT .NET pre-installed
+    container: ubuntu:22.04
     steps:
+      - name: Install minimal dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl libicu70
+          echo "✓ Minimal container - no .NET installed"
+
+      - name: Verify no .NET installed
+        run: |
+          if command -v dotnet &> /dev/null; then
+            echo "✗ dotnet found - this should not happen in clean container"
+            exit 1
+          else
+            echo "✓ No .NET installed - clean container confirmed"
+          fi
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
