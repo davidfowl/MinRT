@@ -26,12 +26,14 @@ public sealed class NuGetAssemblyLoader
 {
     private readonly List<PackageSource> _packageSources = [];
     private readonly List<(string Id, VersionRange Version)> _packages = [];
+    private readonly Dictionary<string, List<string>> _sourceMapping = new(StringComparer.OrdinalIgnoreCase);
     private NuGetFramework _framework = NuGetFramework.Parse("net9.0");
     private string? _runtimeIdentifier;
     private string _packagesDirectory;
     private string? _nugetConfigPath;
     private string? _nugetConfigRoot;
     private bool _useDefaultConfig;
+    private bool _useSourceMappingFromConfig;
     private bool _isCollectible;
     private ILogger _logger;
     private DependencyBehavior _dependencyBehavior = DependencyBehavior.Lowest;
@@ -144,6 +146,33 @@ public sealed class NuGetAssemblyLoader
     public NuGetAssemblyLoader WithRuntimeIdentifier(string runtimeIdentifier)
     {
         _runtimeIdentifier = runtimeIdentifier;
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a source mapping rule that restricts which packages can come from which sources.
+    /// Patterns support glob wildcards (e.g., "Newtonsoft.*", "Microsoft.*").
+    /// </summary>
+    /// <param name="sourceName">The name of the package source (must match a configured source name).</param>
+    /// <param name="packagePatterns">Package ID patterns that should come from this source.</param>
+    public NuGetAssemblyLoader WithSourceMapping(string sourceName, params string[] packagePatterns)
+    {
+        if (!_sourceMapping.TryGetValue(sourceName, out var patterns))
+        {
+            patterns = [];
+            _sourceMapping[sourceName] = patterns;
+        }
+        patterns.AddRange(packagePatterns);
+        return this;
+    }
+
+    /// <summary>
+    /// Reads package source mapping from the nuget.config file.
+    /// Only works when UseDefaultNuGetConfig() or WithNuGetConfig() is also called.
+    /// </summary>
+    public NuGetAssemblyLoader UseSourceMappingFromConfig()
+    {
+        _useSourceMappingFromConfig = true;
         return this;
     }
 
@@ -312,6 +341,9 @@ public sealed class NuGetAssemblyLoader
                     sources.Add(source);
                 }
             }
+            
+            // Load source mapping from config if requested
+            LoadSourceMappingFromSettings(settings);
         }
         // Load from specific nuget.config file
         else if (_nugetConfigPath != null)
@@ -339,6 +371,9 @@ public sealed class NuGetAssemblyLoader
                     sources.Add(source);
                 }
             }
+            
+            // Load source mapping from config if requested
+            LoadSourceMappingFromSettings(settings);
         }
         else
         {
@@ -356,6 +391,92 @@ public sealed class NuGetAssemblyLoader
         return sources;
     }
 
+    private PackageSourceMapping? _packageSourceMapping;
+
+    private void LoadSourceMappingFromSettings(ISettings settings)
+    {
+        if (!_useSourceMappingFromConfig)
+            return;
+
+        _packageSourceMapping = PackageSourceMapping.GetPackageSourceMapping(settings);
+        if (!_packageSourceMapping.IsEnabled)
+        {
+            _logger.LogDebug("No source mapping found in config");
+            _packageSourceMapping = null;
+            return;
+        }
+
+        _logger.LogDebug("Source mapping enabled from config");
+    }
+
+    private List<SourceRepository> FilterRepositoriesForPackage(string packageId, List<SourceRepository> allRepositories)
+    {
+        // If no source mapping configured (neither programmatic nor from config), use all repositories
+        if (_sourceMapping.Count == 0 && _packageSourceMapping == null)
+            return allRepositories;
+
+        var matchingSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        
+        // Check programmatic source mapping first
+        foreach (var (sourceName, patterns) in _sourceMapping)
+        {
+            foreach (var pattern in patterns)
+            {
+                if (PackagePatternMatches(packageId, pattern))
+                {
+                    matchingSources.Add(sourceName);
+                    _logger.LogDebug("    Package {PackageId} matches pattern '{Pattern}' for source {Source}", 
+                        packageId, pattern, sourceName);
+                    break;
+                }
+            }
+        }
+        
+        // Check config-based source mapping
+        if (_packageSourceMapping != null)
+        {
+            var configSources = _packageSourceMapping.GetConfiguredPackageSources(packageId);
+            foreach (var sourceName in configSources)
+            {
+                matchingSources.Add(sourceName);
+                _logger.LogDebug("    Package {PackageId} matches config source mapping for source {Source}", 
+                    packageId, sourceName);
+            }
+        }
+
+        // If package matches no patterns, use all sources (warn only if mapping was configured)
+        if (matchingSources.Count == 0)
+        {
+            if (_sourceMapping.Count > 0 || _packageSourceMapping != null)
+            {
+                _logger.LogWarning("Package {PackageId} does not match any source mapping patterns. Using all sources.", packageId);
+            }
+            return allRepositories;
+        }
+
+        // Filter to only matching sources
+        var filtered = allRepositories.Where(r => matchingSources.Contains(r.PackageSource.Name)).ToList();
+        if (filtered.Count == 0)
+        {
+            _logger.LogWarning("No configured sources match patterns for {PackageId}. Using all sources.", packageId);
+            return allRepositories;
+        }
+
+        return filtered;
+    }
+
+    private static bool PackagePatternMatches(string packageId, string pattern)
+    {
+        // Simple glob matching: * at the end matches any suffix
+        if (pattern.EndsWith("*"))
+        {
+            var prefix = pattern[..^1];
+            return packageId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+        }
+        // Exact match
+        return packageId.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task CollectDependenciesAsync(
         string packageId,
         VersionRange versionRange,
@@ -366,13 +487,16 @@ public sealed class NuGetAssemblyLoader
         CancellationToken ct)
     {
         _logger.LogDebug("CollectDependenciesAsync: Looking for {PackageId} {VersionRange}", packageId, versionRange);
-        _logger.LogDebug("  Searching {Count} repositories", repositories.Count);
+        
+        // Filter repositories based on source mapping
+        var filteredRepos = FilterRepositoriesForPackage(packageId, repositories);
+        _logger.LogDebug("  Searching {Count} repositories (filtered from {Total})", filteredRepos.Count, repositories.Count);
         
         // Find the best version for this package
         PackageIdentity? bestMatch = null;
         SourceRepository? bestSource = null;
 
-        foreach (var repo in repositories)
+        foreach (var repo in filteredRepos)
         {
             _logger.LogDebug("  Querying repository: {Name} ({Url})", repo.PackageSource.Name, repo.PackageSource.Source);
             try

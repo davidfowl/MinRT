@@ -329,23 +329,18 @@ await RunGapTestAsync("GAP: Package source mapping", async () =>
     // SDK supports packageSourceMapping in nuget.config to restrict
     // which packages can come from which sources (security feature)
     
-    // Example nuget.config:
-    // <packageSourceMapping>
-    //   <packageSource key="nuget.org">
-    //     <package pattern="Newtonsoft.*" />
-    //   </packageSource>
-    //   <packageSource key="internal">
-    //     <package pattern="MyCompany.*" />
-    //   </packageSource>
-    // </packageSourceMapping>
-    
-    var builder = NuGetAssemblyLoader.CreateBuilder();
-    var builderType = builder.GetType();
-    var mappingMethod = builderType.GetMethod("WithSourceMapping");
-    
-    AssertTrue(mappingMethod == null, "WithSourceMapping should not exist yet");
-    
-    throw new Exception("Source mapping not implemented");
+    // Test programmatic source mapping
+    var alc = await NuGetAssemblyLoader.CreateBuilder()
+        .AddPackage("Newtonsoft.Json", "13.0.3")
+        .WithTargetFramework("net9.0")
+        .WithPackagesDirectory(packagesDir)
+        .WithSourceMapping("nuget.org", "Newtonsoft.*")
+        .AddFeed("https://api.nuget.org/v3/index.json", "nuget.org")
+        .WithLogger(loggerFactory)
+        .BuildAsync();
+
+    AssertTrue(alc.AssemblyPaths.ContainsKey("Newtonsoft.Json"), "Has Newtonsoft.Json");
+    Console.WriteLine($"    ✓ Source mapping filtered correctly");
 });
 
 // Gap Test 7: Framework references
