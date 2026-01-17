@@ -854,7 +854,11 @@ public sealed class NuGetAssemblyLoader
 
     private static List<string> GetCompatibleRids(string rid)
     {
-        // Simple RID fallback chain - in production would use RuntimeGraph
+        // Simplified RID fallback chain for common scenarios.
+        // The SDK uses NuGet's RuntimeGraph from Microsoft.NETCore.Platforms for full RID resolution,
+        // which handles complex fallbacks like "linux-musl-x64" -> "linux-musl" -> "linux-x64" -> "linux" -> "unix" -> "any".
+        // Our simplified approach covers the common cases but may miss edge cases for distro-specific RIDs.
+        // TODO: Consider loading RuntimeGraph from Microsoft.NETCore.Platforms package for full compatibility.
         var rids = new List<string> { rid };
         
         // Add common fallbacks
