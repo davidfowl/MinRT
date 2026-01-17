@@ -467,13 +467,21 @@ public sealed class NuGetAssemblyLoader
 
     private static bool PackagePatternMatches(string packageId, string pattern)
     {
-        // Simple glob matching: * at the end matches any suffix
+        // NuGet's pattern matching is case-insensitive
+        // Patterns support * as a suffix wildcard (e.g., "Newtonsoft.*" matches "Newtonsoft.Json")
+        
+        // Handle catch-all pattern
+        if (pattern == "*")
+            return true;
+        
+        // Glob matching: * at the end matches any suffix
         if (pattern.EndsWith("*"))
         {
             var prefix = pattern[..^1];
             return packageId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
         }
-        // Exact match
+        
+        // Exact match (case-insensitive like NuGet)
         return packageId.Equals(pattern, StringComparison.OrdinalIgnoreCase);
     }
 
