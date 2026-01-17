@@ -13,6 +13,7 @@ public static partial class RidGraph
     private static readonly Dictionary<string, string[]> s_ridImports = new(StringComparer.OrdinalIgnoreCase)
     {
         ["alpine"] = ["linux-musl"],
+        ["alpine-test-rid"] = ["alpine"],
         ["alpine-arm"] = ["alpine", "linux-musl-arm"],
         ["alpine-arm64"] = ["alpine", "linux-musl-arm64"],
         ["alpine-armv6"] = ["alpine", "linux-musl-armv6"],
@@ -814,3 +815,4 @@ public static partial class RidGraph
 
     private static partial IReadOnlyDictionary<string, string[]> GetRidImports() => s_ridImports;
 }
+
