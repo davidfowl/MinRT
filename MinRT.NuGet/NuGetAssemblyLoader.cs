@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -9,6 +10,7 @@ using NuGet.Packaging.Core;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Resolver;
+using NuGet.RuntimeModel;
 using NuGet.Versioning;
 using NuGetLogLevel = NuGet.Common.LogLevel;
 using INuGetLogger = NuGet.Common.ILogger;
@@ -25,6 +27,7 @@ public sealed class NuGetAssemblyLoader
     private readonly List<PackageSource> _packageSources = [];
     private readonly List<(string Id, VersionRange Version)> _packages = [];
     private NuGetFramework _framework = NuGetFramework.Parse("net9.0");
+    private string? _runtimeIdentifier;
     private string _packagesDirectory;
     private string? _nugetConfigPath;
     private string? _nugetConfigRoot;
@@ -37,6 +40,7 @@ public sealed class NuGetAssemblyLoader
     {
         _packagesDirectory = Path.Combine(Path.GetTempPath(), "minrt-nuget", "packages");
         _logger = NullLogger.Instance;
+        _runtimeIdentifier = GetCurrentRuntimeIdentifier();
     }
 
     /// <summary>
@@ -134,6 +138,16 @@ public sealed class NuGetAssemblyLoader
     }
 
     /// <summary>
+    /// Sets the runtime identifier for RID-specific asset selection (e.g., "win-x64", "linux-x64", "osx-arm64").
+    /// Defaults to the current platform's RID.
+    /// </summary>
+    public NuGetAssemblyLoader WithRuntimeIdentifier(string runtimeIdentifier)
+    {
+        _runtimeIdentifier = runtimeIdentifier;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the directory where packages are downloaded and cached.
     /// </summary>
     public NuGetAssemblyLoader WithPackagesDirectory(string path)
@@ -196,8 +210,8 @@ public sealed class NuGetAssemblyLoader
     /// </summary>
     public async Task<NuGetAssemblyLoadContext> BuildAsync(CancellationToken ct = default)
     {
-        _logger.LogInformation("Starting NuGet package resolution for {PackageCount} packages targeting {Framework}",
-            _packages.Count, _framework);
+        _logger.LogInformation("Starting NuGet package resolution for {PackageCount} packages targeting {Framework} ({RID})",
+            _packages.Count, _framework, _runtimeIdentifier);
 
         // 1. Load package sources
         var sources = await LoadPackageSourcesAsync();
@@ -234,20 +248,29 @@ public sealed class NuGetAssemblyLoader
             _logger.LogDebug("  {PackageId} {Version}", pkg.Id, pkg.Version);
         }
 
-        // 5. Download and extract packages
+        // 5. Download and extract packages, collecting both managed and native assets
         _logger.LogInformation("Downloading packages to {Directory}...", _packagesDirectory);
         var assemblyPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var nativeLibraryPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var frameworkReferences = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var package in resolvedPackages)
         {
             var packageDir = await DownloadAndExtractAsync(package, repositories, cache, nugetLogger, ct);
-            await CollectAssembliesAsync(package, packageDir, assemblyPaths, ct);
+            await CollectAssetsAsync(package, packageDir, assemblyPaths, nativeLibraryPaths, frameworkReferences, ct);
         }
 
-        _logger.LogInformation("Loaded {AssemblyCount} assemblies", assemblyPaths.Count);
+        _logger.LogInformation("Loaded {AssemblyCount} assemblies, {NativeCount} native libraries", 
+            assemblyPaths.Count, nativeLibraryPaths.Count);
+        
+        if (frameworkReferences.Count > 0)
+        {
+            _logger.LogInformation("Required framework references: {FrameworkRefs}", 
+                string.Join(", ", frameworkReferences.OrderBy(x => x)));
+        }
 
         // 6. Create the AssemblyLoadContext
-        var context = new NuGetAssemblyLoadContext(_logger, assemblyPaths, _isCollectible);
+        var context = new NuGetAssemblyLoadContext(_logger, assemblyPaths, nativeLibraryPaths, frameworkReferences, _isCollectible);
 
         _logger.LogInformation("NuGet assembly loader ready (collectible: {IsCollectible})", _isCollectible);
         return context;
@@ -528,15 +551,107 @@ public sealed class NuGetAssemblyLoader
         return packageDir;
     }
 
-    private async Task CollectAssembliesAsync(
+    private async Task CollectAssetsAsync(
         PackageIdentity package,
         string packageDir,
         Dictionary<string, string> assemblyPaths,
+        Dictionary<string, string> nativeLibraryPaths,
+        HashSet<string> frameworkReferences,
         CancellationToken ct)
     {
         var reader = new PackageFolderReader(packageDir);
-        var libItems = (await reader.GetLibItemsAsync(ct)).ToList();
+        
+        // Get all files in the package
+        var files = (await reader.GetFilesAsync(ct)).ToList();
+        
+        // 1. First try RID-specific managed assemblies: runtimes/{rid}/lib/{tfm}/
+        var ridLibCollected = await CollectRidSpecificAssembliesAsync(package, packageDir, files, assemblyPaths);
+        
+        // 2. If no RID-specific assemblies found, fall back to portable: lib/{tfm}/
+        if (!ridLibCollected)
+        {
+            await CollectPortableAssembliesAsync(package, packageDir, reader, assemblyPaths, ct);
+        }
+        
+        // 3. Collect native libraries: runtimes/{rid}/native/
+        CollectNativeLibraries(package, packageDir, files, nativeLibraryPaths);
+        
+        // 4. Collect framework references from nuspec
+        await CollectFrameworkReferencesAsync(reader, frameworkReferences, ct);
+    }
 
+    private Task<bool> CollectRidSpecificAssembliesAsync(
+        PackageIdentity package,
+        string packageDir,
+        List<string> files,
+        Dictionary<string, string> assemblyPaths)
+    {
+        if (_runtimeIdentifier == null) return Task.FromResult(false);
+        
+        // Get compatible RIDs (including fallbacks)
+        var compatibleRids = GetCompatibleRids(_runtimeIdentifier);
+        var found = false;
+        
+        foreach (var rid in compatibleRids)
+        {
+            // Pattern: runtimes/{rid}/lib/{tfm}/*.dll
+            var ridLibPrefix = $"runtimes/{rid}/lib/";
+            var ridLibFiles = files
+                .Where(f => f.StartsWith(ridLibPrefix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            
+            if (ridLibFiles.Count == 0) continue;
+            
+            // Find best TFM match within this RID
+            var tfmGroups = ridLibFiles
+                .Select(f => {
+                    var parts = f.Substring(ridLibPrefix.Length).Split('/');
+                    return parts.Length >= 1 ? parts[0] : null;
+                })
+                .Where(tfm => tfm != null)
+                .Distinct()
+                .Select(tfm => NuGetFramework.Parse(tfm!))
+                .Where(fw => fw != null && DefaultCompatibilityProvider.Instance.IsCompatible(_framework, fw))
+                .ToList();
+            
+            var bestTfm = tfmGroups
+                .OrderByDescending(fw => fw.Version)
+                .FirstOrDefault();
+            
+            if (bestTfm == null) continue;
+            
+            var prefix = $"runtimes/{rid}/lib/{bestTfm.GetShortFolderName()}/";
+            var matchingFiles = ridLibFiles.Where(f => 
+                f.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+            
+            foreach (var file in matchingFiles)
+            {
+                var fullPath = Path.Combine(packageDir, file.Replace('/', Path.DirectorySeparatorChar));
+                var assemblyName = Path.GetFileNameWithoutExtension(file);
+                
+                if (!assemblyPaths.ContainsKey(assemblyName) && File.Exists(fullPath))
+                {
+                    assemblyPaths[assemblyName] = fullPath;
+                    _logger.LogDebug("  RID Assembly ({Rid}): {AssemblyName} -> {Path}", rid, assemblyName, fullPath);
+                    found = true;
+                }
+            }
+            
+            if (found) break; // Use first matching RID
+        }
+        
+        return Task.FromResult(found);
+    }
+
+    private async Task CollectPortableAssembliesAsync(
+        PackageIdentity package,
+        string packageDir,
+        PackageFolderReader reader,
+        Dictionary<string, string> assemblyPaths,
+        CancellationToken ct)
+    {
+        var libItems = (await reader.GetLibItemsAsync(ct)).ToList();
         var bestFramework = NuGetFrameworkUtility.GetNearest(libItems, _framework, item => item.TargetFramework);
 
         if (bestFramework == null)
@@ -562,6 +677,147 @@ public sealed class NuGetAssemblyLoader
             }
         }
     }
+
+    private void CollectNativeLibraries(
+        PackageIdentity package,
+        string packageDir,
+        List<string> files,
+        Dictionary<string, string> nativeLibraryPaths)
+    {
+        if (_runtimeIdentifier == null) return;
+        
+        var compatibleRids = GetCompatibleRids(_runtimeIdentifier);
+        var nativeExtensions = GetNativeLibraryExtensions();
+        
+        foreach (var rid in compatibleRids)
+        {
+            // Pattern: runtimes/{rid}/native/*
+            var nativePrefix = $"runtimes/{rid}/native/";
+            var nativeFiles = files
+                .Where(f => f.StartsWith(nativePrefix, StringComparison.OrdinalIgnoreCase))
+                .Where(f => nativeExtensions.Any(ext => f.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            
+            foreach (var file in nativeFiles)
+            {
+                var fullPath = Path.Combine(packageDir, file.Replace('/', Path.DirectorySeparatorChar));
+                var libName = Path.GetFileNameWithoutExtension(file);
+                
+                // Remove lib prefix on Unix
+                if (libName.StartsWith("lib", StringComparison.OrdinalIgnoreCase) && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    libName = libName.Substring(3);
+                }
+                
+                if (!nativeLibraryPaths.ContainsKey(libName) && File.Exists(fullPath))
+                {
+                    nativeLibraryPaths[libName] = fullPath;
+                    _logger.LogDebug("  Native ({Rid}): {LibName} -> {Path}", rid, libName, fullPath);
+                }
+            }
+            
+            if (nativeFiles.Count > 0) break; // Use first matching RID
+        }
+    }
+
+    private static List<string> GetCompatibleRids(string rid)
+    {
+        // Simple RID fallback chain - in production would use RuntimeGraph
+        var rids = new List<string> { rid };
+        
+        // Add common fallbacks
+        if (rid.Contains("-"))
+        {
+            // e.g., "win-x64" -> "win"
+            var basePart = rid.Split('-')[0];
+            if (!rids.Contains(basePart))
+                rids.Add(basePart);
+        }
+        
+        // Add generic fallbacks
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            if (!rids.Contains("win")) rids.Add("win");
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            if (!rids.Contains("linux")) rids.Add("linux");
+            if (!rids.Contains("unix")) rids.Add("unix");
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            if (!rids.Contains("osx")) rids.Add("osx");
+            if (!rids.Contains("unix")) rids.Add("unix");
+        }
+        
+        rids.Add("any");
+        return rids;
+    }
+
+    private static string[] GetNativeLibraryExtensions()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return [".dll"];
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return [".dylib", ".so"];
+        return [".so"];
+    }
+
+    private static string GetCurrentRuntimeIdentifier()
+    {
+        var arch = RuntimeInformation.OSArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.X86 => "x86",
+            Architecture.Arm64 => "arm64",
+            Architecture.Arm => "arm",
+            _ => "x64"
+        };
+        
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return $"win-{arch}";
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return $"linux-{arch}";
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return $"osx-{arch}";
+        
+        return $"linux-{arch}";
+    }
+
+    private async Task CollectFrameworkReferencesAsync(
+        PackageFolderReader reader,
+        HashSet<string> frameworkReferences,
+        CancellationToken ct)
+    {
+        try
+        {
+            var nuspec = await reader.GetNuspecReaderAsync(ct);
+            
+            // Get framework references for the target framework
+            var groups = nuspec.GetFrameworkRefGroups();
+            foreach (var group in groups)
+            {
+                // Check if this group applies to our target framework
+                if (!_framework.IsAny && 
+                    !NuGetFrameworkUtility.IsCompatibleWithFallbackCheck(
+                        _framework, 
+                        group.TargetFramework))
+                {
+                    continue;
+                }
+
+                foreach (var frameworkRef in group.FrameworkReferences)
+                {
+                    frameworkReferences.Add(frameworkRef.Name);
+                    _logger.LogDebug("    Found framework reference: {FrameworkRef}", frameworkRef.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogTrace("Could not read framework references from nuspec: {Error}", ex.Message);
+        }
+    }
 }
 
 /// <summary>
@@ -571,19 +827,39 @@ public sealed class NuGetAssemblyLoadContext : AssemblyLoadContext
 {
     private readonly ILogger _logger;
     private readonly Dictionary<string, string> _assemblyPaths;
+    private readonly Dictionary<string, string> _nativeLibraryPaths;
+    private readonly HashSet<string> _requiredFrameworkReferences;
     private readonly Dictionary<string, Assembly> _loadedAssemblies = new(StringComparer.OrdinalIgnoreCase);
 
-    internal NuGetAssemblyLoadContext(ILogger logger, Dictionary<string, string> assemblyPaths, bool isCollectible = false)
+    internal NuGetAssemblyLoadContext(
+        ILogger logger, 
+        Dictionary<string, string> assemblyPaths, 
+        Dictionary<string, string> nativeLibraryPaths,
+        HashSet<string> requiredFrameworkReferences,
+        bool isCollectible = false)
         : base(name: "NuGetAssemblyLoadContext", isCollectible: isCollectible)
     {
         _logger = logger;
         _assemblyPaths = assemblyPaths;
+        _nativeLibraryPaths = nativeLibraryPaths;
+        _requiredFrameworkReferences = requiredFrameworkReferences;
     }
 
     /// <summary>
     /// Gets the resolved assembly paths.
     /// </summary>
     public IReadOnlyDictionary<string, string> AssemblyPaths => _assemblyPaths;
+
+    /// <summary>
+    /// Gets the framework references required by the loaded packages.
+    /// Common values include "Microsoft.NETCore.App", "Microsoft.AspNetCore.App", "Microsoft.WindowsDesktop.App".
+    /// </summary>
+    public IReadOnlySet<string> RequiredFrameworkReferences => _requiredFrameworkReferences;
+
+    /// <summary>
+    /// Gets the resolved native library paths.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> NativeLibraryPaths => _nativeLibraryPaths;
 
     /// <summary>
     /// Loads an assembly by name.
@@ -645,9 +921,58 @@ public sealed class NuGetAssemblyLoadContext : AssemblyLoadContext
 
     protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
     {
-        // For now, just fall back to default
-        _logger.LogTrace("Native library {Name} requested, falling back to default", unmanagedDllName);
+        // Try to find the native library in our resolved paths
+        var searchNames = GetNativeLibrarySearchNames(unmanagedDllName);
+        
+        foreach (var searchName in searchNames)
+        {
+            if (_nativeLibraryPaths.TryGetValue(searchName, out var path))
+            {
+                if (File.Exists(path))
+                {
+                    _logger.LogDebug("Loading native library {Name} from {Path}", unmanagedDllName, path);
+                    return NativeLibrary.Load(path);
+                }
+            }
+        }
+        
+        // Also try direct path lookup by file name
+        foreach (var kvp in _nativeLibraryPaths)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(kvp.Value);
+            if (fileName.Equals(unmanagedDllName, StringComparison.OrdinalIgnoreCase) ||
+                fileName.Equals($"lib{unmanagedDllName}", StringComparison.OrdinalIgnoreCase))
+            {
+                if (File.Exists(kvp.Value))
+                {
+                    _logger.LogDebug("Loading native library {Name} from {Path}", unmanagedDllName, kvp.Value);
+                    return NativeLibrary.Load(kvp.Value);
+                }
+            }
+        }
+        
+        _logger.LogTrace("Native library {Name} not found in NuGet packages, falling back to default", unmanagedDllName);
         return IntPtr.Zero;
+    }
+
+    private static IEnumerable<string> GetNativeLibrarySearchNames(string name)
+    {
+        yield return name;
+        
+        // Try without extension
+        var withoutExt = Path.GetFileNameWithoutExtension(name);
+        if (withoutExt != name)
+            yield return withoutExt;
+        
+        // Try without lib prefix (Unix convention)
+        if (name.StartsWith("lib", StringComparison.OrdinalIgnoreCase))
+            yield return name.Substring(3);
+        if (withoutExt.StartsWith("lib", StringComparison.OrdinalIgnoreCase))
+            yield return withoutExt.Substring(3);
+        
+        // Try common variations
+        yield return name.Replace("-", "_");
+        yield return name.Replace("_", "-");
     }
 }
 
