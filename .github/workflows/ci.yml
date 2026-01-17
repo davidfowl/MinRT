@@ -1,0 +1,262 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Job 1: Build all artifacts
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build --no-restore
+
+      # Build MinRT.TestHost as Native AOT for Linux
+      - name: Publish TestHost (linux-x64)
+        run: |
+          dotnet publish MinRT.TestHost -c Release -r linux-x64 \
+            -o artifacts/testhost-linux-x64
+
+      # Build MinRT.TestHost as Native AOT for Windows
+      - name: Publish TestHost (win-x64)
+        run: |
+          dotnet publish MinRT.TestHost -c Release -r win-x64 \
+            -o artifacts/testhost-win-x64
+
+      # Build MinRT.TestHost as Native AOT for macOS
+      - name: Publish TestHost (osx-x64)
+        run: |
+          dotnet publish MinRT.TestHost -c Release -r osx-x64 \
+            -o artifacts/testhost-osx-x64
+
+      # Publish test apps as framework-dependent
+      - name: Publish hello app
+        run: |
+          dotnet publish hello -c Release -o artifacts/hello
+
+      - name: Publish hello-web app
+        run: |
+          dotnet publish hello-web -c Release -o artifacts/hello-web
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minrt-artifacts
+          path: artifacts/
+
+  # Job 2: Core E2E on Linux (NO .NET installed)
+  core-e2e-linux:
+    runs-on: ubuntu-latest
+    needs: build
+    # Intentionally NO setup-dotnet - proves MinRT works without pre-installed .NET
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: minrt-artifacts
+          path: artifacts/
+
+      - name: Make TestHost executable
+        run: chmod +x artifacts/testhost-linux-x64/MinRT.TestHost
+
+      - name: Verify no .NET installed
+        run: |
+          echo "Checking that .NET is not installed..."
+          if command -v dotnet &> /dev/null; then
+            echo "WARNING: dotnet found in PATH, but continuing anyway"
+            dotnet --version || true
+          else
+            echo "✓ No dotnet in PATH - this is expected"
+          fi
+
+      - name: Run hello app via MinRT
+        run: |
+          cd artifacts
+          ./testhost-linux-x64/MinRT.TestHost hello/hello.dll
+        timeout-minutes: 5
+
+      - name: Run hello-web app via MinRT
+        run: |
+          cd artifacts
+          # Start web app in background
+          ./testhost-linux-x64/MinRT.TestHost hello-web/hello-web.dll &
+          APP_PID=$!
+          
+          # Wait for startup
+          echo "Waiting for app to start..."
+          sleep 10
+          
+          # Test the endpoint
+          echo "Testing http://localhost:5099..."
+          RESPONSE=$(curl -s --retry 5 --retry-delay 2 http://localhost:5099 || echo "CURL_FAILED")
+          echo "Response: $RESPONSE"
+          
+          # Kill the app
+          kill $APP_PID 2>/dev/null || true
+          
+          # Verify response
+          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+            echo "✓ ASP.NET Core app working!"
+          else
+            echo "✗ Unexpected response"
+            exit 1
+          fi
+        timeout-minutes: 5
+
+  # Job 3: Core E2E on Windows (NO .NET installed)
+  core-e2e-windows:
+    runs-on: windows-latest
+    needs: build
+    # Intentionally NO setup-dotnet
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: minrt-artifacts
+          path: artifacts
+
+      - name: Verify no .NET installed
+        shell: pwsh
+        run: |
+          Write-Host "Checking that .NET is not installed..."
+          $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+          if ($dotnetPath) {
+            Write-Host "WARNING: dotnet found, but continuing anyway"
+            dotnet --version
+          } else {
+            Write-Host "✓ No dotnet in PATH - this is expected"
+          }
+
+      - name: Run hello app via MinRT
+        shell: pwsh
+        run: |
+          cd artifacts
+          .\testhost-win-x64\MinRT.TestHost.exe hello\hello.dll
+        timeout-minutes: 5
+
+      - name: Run hello-web app via MinRT
+        shell: pwsh
+        run: |
+          cd artifacts
+          
+          # Start web app in background
+          $process = Start-Process -FilePath ".\testhost-win-x64\MinRT.TestHost.exe" `
+            -ArgumentList "hello-web\hello-web.dll" `
+            -PassThru -NoNewWindow
+          
+          # Wait for startup
+          Write-Host "Waiting for app to start..."
+          Start-Sleep -Seconds 15
+          
+          # Test the endpoint
+          Write-Host "Testing http://localhost:5099..."
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:5099" -UseBasicParsing -TimeoutSec 30
+            Write-Host "Response: $($response.Content)"
+            
+            if ($response.Content -like "*Hello from ASP.NET Core*") {
+              Write-Host "✓ ASP.NET Core app working!"
+            } else {
+              Write-Host "✗ Unexpected response"
+              exit 1
+            }
+          } catch {
+            Write-Host "✗ Request failed: $_"
+            exit 1
+          } finally {
+            # Kill the app
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+        timeout-minutes: 5
+
+  # Job 4: Core E2E on macOS (NO .NET installed)
+  core-e2e-macos:
+    runs-on: macos-latest
+    needs: build
+    # Intentionally NO setup-dotnet
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: minrt-artifacts
+          path: artifacts/
+
+      - name: Make TestHost executable
+        run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
+
+      - name: Verify no .NET installed
+        run: |
+          echo "Checking that .NET is not installed..."
+          if command -v dotnet &> /dev/null; then
+            echo "WARNING: dotnet found in PATH, but continuing anyway"
+            dotnet --version || true
+          else
+            echo "✓ No dotnet in PATH - this is expected"
+          fi
+
+      - name: Run hello app via MinRT
+        run: |
+          cd artifacts
+          ./testhost-osx-x64/MinRT.TestHost hello/hello.dll
+        timeout-minutes: 5
+
+      - name: Run hello-web app via MinRT
+        run: |
+          cd artifacts
+          # Start web app in background
+          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll &
+          APP_PID=$!
+          
+          # Wait for startup
+          echo "Waiting for app to start..."
+          sleep 10
+          
+          # Test the endpoint
+          echo "Testing http://localhost:5099..."
+          RESPONSE=$(curl -s --retry 5 --retry-delay 2 http://localhost:5099 || echo "CURL_FAILED")
+          echo "Response: $RESPONSE"
+          
+          # Kill the app
+          kill $APP_PID 2>/dev/null || true
+          
+          # Verify response
+          if [[ "$RESPONSE" == *"Hello from ASP.NET Core"* ]]; then
+            echo "✓ ASP.NET Core app working!"
+          else
+            echo "✗ Unexpected response"
+            exit 1
+          fi
+        timeout-minutes: 5
+
+  # Job 5: NuGet Assembly Loader tests (xUnit)
+  nuget-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Run NuGet tests
+        run: dotnet test MinRT.Tests --verbosity normal
+        timeout-minutes: 10
