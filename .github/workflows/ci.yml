@@ -71,14 +71,14 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
-      - name: Publish TestHost (osx-x64)
-        run: dotnet publish MinRT.TestHost -c Release -r osx-x64 -o artifacts/testhost-osx-x64
+      - name: Publish TestHost (osx-arm64)
+        run: dotnet publish MinRT.TestHost -c Release -r osx-arm64 -o artifacts/testhost-osx-arm64
 
       - name: Create pre-built runtime layout (for airgap test)
         run: |
           # Create a runtime layout that can be used offline
-          chmod +x ./artifacts/testhost-osx-x64/MinRT.TestHost
-          ./artifacts/testhost-osx-x64/MinRT.TestHost --create-layout artifacts/runtime-layout-osx --aspnet
+          chmod +x ./artifacts/testhost-osx-arm64/MinRT.TestHost
+          ./artifacts/testhost-osx-arm64/MinRT.TestHost --create-layout artifacts/runtime-layout-osx --aspnet
           ls -la artifacts/runtime-layout-osx/
 
       - name: Upload artifacts
@@ -257,7 +257,7 @@ jobs:
           cp -r linux-artifacts/hello-web artifacts/hello-web
 
       - name: Make TestHost executable
-        run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
+        run: chmod +x artifacts/testhost-osx-arm64/MinRT.TestHost
 
       - name: Show runtime layout contents
         run: |
@@ -271,7 +271,7 @@ jobs:
         run: |
           cd artifacts
           echo "Using --offline flag - any download attempt will fail"
-          ./testhost-osx-x64/MinRT.TestHost hello/hello.dll --layout runtime-layout-osx --offline
+          ./testhost-osx-arm64/MinRT.TestHost hello/hello.dll --layout runtime-layout-osx --offline
         timeout-minutes: 2
 
       - name: Run hello-web app via MinRT (offline with pre-built layout)
@@ -279,7 +279,7 @@ jobs:
           cd artifacts
           echo "Using --offline flag - any download attempt will fail"
           # Start web app in background using pre-built layout
-          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet --layout runtime-layout-osx --offline &
+          ./testhost-osx-arm64/MinRT.TestHost hello-web/hello-web.dll --aspnet --layout runtime-layout-osx --offline &
           APP_PID=$!
           
           # Wait for startup
@@ -414,7 +414,7 @@ jobs:
           cp -r linux-artifacts/hello-web artifacts/hello-web
 
       - name: Make TestHost executable
-        run: chmod +x artifacts/testhost-osx-x64/MinRT.TestHost
+        run: chmod +x artifacts/testhost-osx-arm64/MinRT.TestHost
 
       - name: Remove system .NET (prove MinRT works without it)
         run: |
@@ -431,14 +431,14 @@ jobs:
       - name: Run hello app via MinRT
         run: |
           cd artifacts
-          ./testhost-osx-x64/MinRT.TestHost hello/hello.dll
+          ./testhost-osx-arm64/MinRT.TestHost hello/hello.dll
         timeout-minutes: 5
 
       - name: Run hello-web app via MinRT
         run: |
           cd artifacts
           # Start web app in background (--aspnet enables ASP.NET Core framework)
-          ./testhost-osx-x64/MinRT.TestHost hello-web/hello-web.dll --aspnet &
+          ./testhost-osx-arm64/MinRT.TestHost hello-web/hello-web.dll --aspnet &
           APP_PID=$!
           
           # Wait for startup
