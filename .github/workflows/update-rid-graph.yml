@@ -28,13 +28,13 @@ jobs:
       - name: Generate RID Graph
         run: |
           cd tools
-          dotnet run generate-rid-graph.cs -- "${{ github.workspace }}/MinRT.NuGet/RidGraph.Generated.cs"
+          dotnet run generate-rid-graph.cs -- "${{ github.workspace }}/src/MinRT.NuGet/RidGraph.Generated.cs"
 
       - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if git diff --quiet MinRT.NuGet/RidGraph.Generated.cs; then
+          if git diff --quiet src/MinRT.NuGet/RidGraph.Generated.cs; then
             echo "No changes detected"
             exit 0
           fi
@@ -45,7 +45,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
           git checkout -b "$BRANCH"
-          git add MinRT.NuGet/RidGraph.Generated.cs
+          git add src/MinRT.NuGet/RidGraph.Generated.cs
           git commit -m "chore: Update RID graph from runtime.json"
           git push origin "$BRANCH"
           

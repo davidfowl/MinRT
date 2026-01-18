@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MinRT.NuGet\MinRT.NuGet.csproj" />
+    <ProjectReference Include="..\..\src\MinRT.NuGet\MinRT.NuGet.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0-preview.1.25080.5" />
   </ItemGroup>
 

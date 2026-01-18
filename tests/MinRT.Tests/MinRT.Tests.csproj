@@ -17,8 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MinRT.Core\MinRT.Core.csproj" />
-    <ProjectReference Include="..\MinRT.NuGet\MinRT.NuGet.csproj" />
+    <ProjectReference Include="..\..\src\MinRT.Core\MinRT.Core.csproj" />
+    <ProjectReference Include="..\..\src\MinRT.NuGet\MinRT.NuGet.csproj" />
   </ItemGroup>
 
   <ItemGroup>

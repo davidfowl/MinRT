@@ -20,7 +20,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Publish TestHost (linux-x64)
-        run: dotnet publish MinRT.TestHost -c Release -r linux-x64 -o artifacts/testhost-linux-x64
+        run: dotnet publish tests/MinRT.TestHost -c Release -r linux-x64 -o artifacts/testhost-linux-x64
 
       - name: Publish hello app
         run: dotnet publish hello -c Release -o artifacts/hello
@@ -52,7 +52,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Publish TestHost (win-x64)
-        run: dotnet publish MinRT.TestHost -c Release -r win-x64 -o artifacts/testhost-win-x64
+        run: dotnet publish tests/MinRT.TestHost -c Release -r win-x64 -o artifacts/testhost-win-x64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -72,7 +72,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Publish TestHost (osx-arm64)
-        run: dotnet publish MinRT.TestHost -c Release -r osx-arm64 -o artifacts/testhost-osx-arm64
+        run: dotnet publish tests/MinRT.TestHost -c Release -r osx-arm64 -o artifacts/testhost-osx-arm64
 
       - name: Create pre-built runtime layout (for airgap test)
         run: |
@@ -478,5 +478,5 @@ jobs:
         run: dotnet restore
 
       - name: Run NuGet tests
-        run: dotnet test MinRT.Tests --verbosity normal
+        run: dotnet test tests/MinRT.Tests --verbosity normal
         timeout-minutes: 10

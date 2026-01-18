@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MinRT.Core\MinRT.Core.csproj" />
+    <ProjectReference Include="..\..\src\MinRT.Core\MinRT.Core.csproj" />
   </ItemGroup>
 
 </Project>

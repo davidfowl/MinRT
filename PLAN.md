@@ -95,14 +95,14 @@ This is the same technique used by the .NET SDK.
 
 ```
 MinRT/
-├── MinRT.Core/
+├── src/MinRT.Core/
 │   ├── MinRTBuilder.cs          # Fluent builder API
 │   ├── MinRTContext.cs          # Runs app via patched apphost
 │   ├── AppHostPatcher.cs        # Binary patching
 │   ├── RuntimeDownloader.cs     # Downloads runtime + apphost
 │   ├── NuGetDownloader.cs       # AOT-safe NuGet client
 │   └── RuntimeIdentifierHelper.cs
-├── MinRT.TestHost/              # Test harness
+├── tests/MinRT.TestHost/        # Test harness
 ├── hello/                       # Console test app
 ├── hello-web/                   # ASP.NET Core test app
 └── test-artifacts/              # Published test apps
@@ -289,7 +289,7 @@ Matches SDK/NuGet restore behavior:
 ### Key Components
 
 ```
-MinRT.NuGet/
+src/MinRT.NuGet/
 ├── NuGetAssemblyLoader.cs      # Builder API + resolution logic
 │   ├── CreateBuilder()         # Entry point
 │   ├── AddPackage()            # Add package reference

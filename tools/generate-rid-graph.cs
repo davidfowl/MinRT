@@ -4,7 +4,7 @@
 // Downloads runtime.json from Microsoft.NETCore.Platforms and generates RidGraph.Generated.cs
 //
 // Usage: dotnet run generate-rid-graph.cs [output-path]
-// Default output: ../MinRT.NuGet/RidGraph.Generated.cs
+// Default output: ../src/MinRT.NuGet/RidGraph.Generated.cs
 
 using System.Text.Json;
 
@@ -13,7 +13,7 @@ var outputPath = args.Length > 0 ? args[0] : null;
 // If no path specified or relative, resolve from current working directory
 if (string.IsNullOrEmpty(outputPath))
 {
-    outputPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "MinRT.NuGet", "RidGraph.Generated.cs");
+    outputPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "src", "MinRT.NuGet", "RidGraph.Generated.cs");
 }
 
 outputPath = Path.GetFullPath(outputPath);
