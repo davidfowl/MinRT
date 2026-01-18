@@ -475,7 +475,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore MinRT.slnx
 
       - name: Run NuGet tests
         run: dotnet test tests/MinRT.Tests --verbosity normal
