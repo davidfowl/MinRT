@@ -105,7 +105,7 @@ MinRT/
 ├── tests/MinRT.TestHost/        # Test harness
 ├── tests/apps/hello/            # Console test app
 ├── tests/apps/hello-web/        # ASP.NET Core test app
-└── test-artifacts/              # Published test apps
+└── tests/apps/test-artifacts/   # Published test apps
 ```
 
 ## API
