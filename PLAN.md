@@ -103,8 +103,8 @@ MinRT/
 │   ├── NuGetDownloader.cs       # AOT-safe NuGet client
 │   └── RuntimeIdentifierHelper.cs
 ├── tests/MinRT.TestHost/        # Test harness
-├── hello/                       # Console test app
-├── hello-web/                   # ASP.NET Core test app
+├── tests/apps/hello/            # Console test app
+├── tests/apps/hello-web/        # ASP.NET Core test app
 └── test-artifacts/              # Published test apps
 ```
 
