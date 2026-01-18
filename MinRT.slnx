@@ -5,6 +5,7 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="tests/apps/hello-nuget/hello-nuget.csproj" />
+  <Project Path="tests/apps/MinRT.NuGet.DefaultALC/MinRT.NuGet.DefaultALC.csproj" />
   <Project Path="src/MinRT.Core/MinRT.Core.csproj" />
   <Project Path="src/MinRT.NuGet/MinRT.NuGet.csproj" />
   <Project Path="tests/MinRT.TestHost/MinRT.TestHost.csproj" />
