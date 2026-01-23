@@ -16,7 +16,7 @@ public enum SharedFramework
 
 /// <summary>
 /// Fluent builder for constructing a runnable .NET context.
-/// Downloads runtime and apphost from NuGet, patches apphost, ready to execute.
+/// Downloads runtime from official release archives and runs via dotnet muxer.
 /// </summary>
 public sealed class MinRTBuilder
 {
@@ -166,7 +166,7 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
-    /// Build the runtime context - downloads runtime/apphost (or uses existing layout) and patches apphost
+    /// Build the runtime context - downloads runtime and prepares app for execution
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
     {
@@ -183,7 +183,7 @@ public sealed class MinRTBuilder
             throw new FileNotFoundException($"App not found: {appPath}");
         }
 
-        _targetFramework ??= "net9.0";
+        _targetFramework ??= "net10.0";
         _runtimeIdentifier ??= RuntimeIdentifierHelper.GetCurrent();
         _cacheDirectory ??= GetDefaultCacheDirectory();
         _runtimeVersion ??= GetDefaultRuntimeVersion(_targetFramework);
@@ -192,32 +192,22 @@ public sealed class MinRTBuilder
         paths.EnsureDirectoriesExist();
 
         string runtimePath;
-        string appHostTemplate;
+        string muxerPath;
 
         if (!string.IsNullOrEmpty(_layoutPath))
         {
             // Use existing layout
             runtimePath = _layoutPath;
             
-            // Find apphost in layout or download it
-            var apphostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
-            var layoutAppHost = Path.Combine(_layoutPath, apphostName);
-            if (File.Exists(layoutAppHost))
-            {
-                appHostTemplate = layoutAppHost;
-            }
-            else if (_requireOffline)
+            // Find muxer in layout
+            var muxerName = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+            muxerPath = Path.Combine(_layoutPath, muxerName);
+            
+            if (!File.Exists(muxerPath))
             {
                 throw new InvalidOperationException(
-                    $"Offline mode: apphost not found in layout at {layoutAppHost}. " +
-                    "Ensure the layout was created with CreateLayoutAsync() which includes the apphost.");
-            }
-            else
-            {
-                // Download apphost template only
-                using var http = new HttpClient();
-                var downloader = new RuntimeDownloader(http, paths, _requireOffline);
-                appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+                    $"Muxer not found in layout at {muxerPath}. " +
+                    "Ensure the layout was created with CreateLayoutAsync().");
             }
         }
         else if (_requireOffline)
@@ -227,14 +217,14 @@ public sealed class MinRTBuilder
         }
         else
         {
-            // Download runtime and apphost
+            // Download runtime
             using var http = new HttpClient();
             var downloader = new RuntimeDownloader(http, paths, _requireOffline);
             runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
-            appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
+            muxerPath = downloader.GetMuxerPath(runtimePath);
         }
 
-        // 2.5 Handle package restore if packages specified
+        // Handle package restore if packages specified
         string? packageLayoutPath = null;
         if (_packages.Count > 0 || !string.IsNullOrEmpty(_packagesJsonPath))
         {
@@ -245,15 +235,14 @@ public sealed class MinRTBuilder
             }
         }
 
-        // 3. Create app directory and patch apphost
+        // Create app directory and copy app files
         var appFileName = Path.GetFileName(appPath);
         var appDir = GetAppDirectory(paths, appPath);
         Directory.CreateDirectory(appDir);
 
-        var appHostPath = Path.Combine(appDir, GetAppHostName(appFileName));
         var appDllDest = Path.Combine(appDir, appFileName);
 
-        // Copy app DLL next to apphost (apphost expects it relative to itself)
+        // Copy app DLL
         File.Copy(appPath, appDllDest, overwrite: true);
 
         // Copy runtimeconfig.json
@@ -288,16 +277,10 @@ public sealed class MinRTBuilder
             }
         }
 
-        // Patch apphost
-        if (!File.Exists(appHostPath))
-        {
-            AppHostPatcher.PatchAppHost(appHostTemplate, appHostPath, appFileName);
-        }
-
-        // 4. Build assembly paths from probing paths
+        // Build assembly paths from probing paths
         var assemblyPaths = BuildAssemblyPaths();
 
-        return new MinRTContext(runtimePath, _runtimeVersion, appHostPath, assemblyPaths, [.. _probingPaths], packageLayoutPath);
+        return new MinRTContext(runtimePath, _runtimeVersion, muxerPath, appDllDest, assemblyPaths, [.. _probingPaths], packageLayoutPath);
     }
 
     /// <summary>
@@ -416,7 +399,7 @@ public sealed class MinRTBuilder
     {
         _runtimeIdentifier ??= RuntimeIdentifierHelper.GetCurrent();
         _cacheDirectory ??= GetDefaultCacheDirectory();
-        _targetFramework ??= "net9.0";
+        _targetFramework ??= "net10.0";
         _runtimeVersion ??= GetDefaultRuntimeVersion(_targetFramework);
 
         var paths = new CachePaths(_cacheDirectory);
@@ -425,17 +408,12 @@ public sealed class MinRTBuilder
         using var http = new HttpClient();
         var downloader = new RuntimeDownloader(http, paths);
 
-        // Download runtime to cache
+        // Download runtime to cache (includes muxer)
         var runtimePath = await downloader.EnsureRuntimeAsync(_runtimeVersion, _runtimeIdentifier, _sharedFrameworks, ct);
 
         // Copy to output directory
         Directory.CreateDirectory(outputPath);
         CopyDirectory(runtimePath, outputPath);
-
-        // Also copy apphost template
-        var appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
-        var appHostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
-        File.Copy(appHostTemplate, Path.Combine(outputPath, appHostName), overwrite: true);
     }
 
     private static void CopyDirectory(string sourceDir, string destDir)

@@ -1,27 +1,23 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Formats.Tar;
 using System.IO.Compression;
+using System.Security.Cryptography;
 
 namespace MinRT.Core;
 
 /// <summary>
-/// Downloads and assembles .NET runtime from NuGet packages.
+/// Downloads .NET runtime from official release archives.
 /// 
-/// Uses Microsoft.NETCore.App.Runtime.{rid} package which contains:
-/// - hostfxr.dll (host/fxr/{version}/)
-/// - hostpolicy.dll, coreclr.dll, etc. (shared/Microsoft.NETCore.App/{version}/)
-/// - System.*.dll managed assemblies
-/// - Microsoft.NETCore.App.deps.json and .runtimeconfig.json
-/// 
-/// Also handles Microsoft.NETCore.App.Host.{rid} for apphost template
-/// and Microsoft.AspNetCore.App.Runtime.{rid} for ASP.NET Core.
+/// Uses the official release metadata API at builds.dotnet.microsoft.com
+/// to download pre-built runtime archives that include the dotnet muxer.
 /// </summary>
 public sealed class RuntimeDownloader
 {
     private readonly HttpClient _http;
     private readonly CachePaths _paths;
-    private readonly NuGetDownloader _nuget;
+    private readonly ReleaseMetadataClient _releaseClient;
     private readonly bool _requireOffline;
 
     public RuntimeDownloader(HttpClient http, CachePaths paths, bool requireOffline = false)
@@ -29,11 +25,11 @@ public sealed class RuntimeDownloader
         _http = http;
         _paths = paths;
         _requireOffline = requireOffline;
-        _nuget = new NuGetDownloader(http, paths, requireOffline);
+        _releaseClient = new ReleaseMetadataClient(http);
     }
 
     /// <summary>
-    /// Ensure runtime is downloaded and assembled. Returns path to runtime root.
+    /// Ensure runtime is downloaded and extracted. Returns path to runtime root.
     /// </summary>
     public async Task<string> EnsureRuntimeAsync(
         string version, 
@@ -43,18 +39,25 @@ public sealed class RuntimeDownloader
     {
         var runtimePath = _paths.GetRuntimePath(version, rid);
         
-        // Check if already assembled (base runtime)
+        // Check if already downloaded
         if (!IsRuntimeComplete(runtimePath, version))
         {
-            // Download base runtime package
-            var runtimePackageId = $"Microsoft.NETCore.App.Runtime.{rid}";
-            var runtimePackagePath = await _nuget.DownloadPackageAsync(runtimePackageId, version, ct);
+            if (_requireOffline)
+            {
+                throw new InvalidOperationException(
+                    $"Runtime {version} for {rid} not found in cache and offline mode is enabled.");
+            }
 
-            AssembleRuntimeLayout(runtimePath, version, rid, runtimePackagePath, "Microsoft.NETCore.App");
-
+            // Get download info from release metadata
+            var downloadInfo = await _releaseClient.GetRuntimeDownloadInfoAsync(version, rid, ct);
+            
+            // Download and extract
+            await DownloadAndExtractAsync(downloadInfo, runtimePath, ct);
+            
+            // Set execute permissions on Unix
             if (!OperatingSystem.IsWindows())
             {
-                SetExecutePermissions(runtimePath, version, "Microsoft.NETCore.App");
+                SetExecutePermissions(runtimePath, version);
             }
         }
 
@@ -73,6 +76,15 @@ public sealed class RuntimeDownloader
     }
 
     /// <summary>
+    /// Gets the path to the dotnet muxer executable.
+    /// </summary>
+    public string GetMuxerPath(string runtimePath)
+    {
+        var muxerName = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+        return Path.Combine(runtimePath, muxerName);
+    }
+
+    /// <summary>
     /// Download and install ASP.NET Core shared framework.
     /// </summary>
     private async Task EnsureAspNetCoreAsync(string runtimePath, string version, string rid, CancellationToken ct)
@@ -85,99 +97,136 @@ public sealed class RuntimeDownloader
             return;
         }
 
-        var packageId = $"Microsoft.AspNetCore.App.Runtime.{rid}";
-        var packagePath = await _nuget.DownloadPackageAsync(packageId, version, ct);
-
-        // Install to shared/Microsoft.AspNetCore.App/{version}/
-        Directory.CreateDirectory(sharedDir);
-
-        var libDir = FindRuntimeLibDir(packagePath, rid, version);
-        if (libDir is not null && Directory.Exists(libDir))
+        if (_requireOffline)
         {
-            foreach (var file in Directory.GetFiles(libDir))
+            throw new InvalidOperationException(
+                $"ASP.NET Core {version} for {rid} not found in cache and offline mode is enabled.");
+        }
+
+        // Get download info from release metadata
+        var downloadInfo = await _releaseClient.GetAspNetCoreDownloadInfoAsync(version, rid, ct);
+        
+        // Download to temp and extract only the shared framework portion
+        var tempDir = Path.Combine(_paths.Downloads, $"aspnetcore-{version}-{rid}-{Guid.NewGuid():N}");
+        try
+        {
+            await DownloadAndExtractAsync(downloadInfo, tempDir, ct);
+            
+            // Copy the shared/Microsoft.AspNetCore.App/{version} folder to runtimePath
+            var sourceDir = Path.Combine(tempDir, "shared", "Microsoft.AspNetCore.App", version);
+            if (Directory.Exists(sourceDir))
             {
-                var ext = Path.GetExtension(file).ToLowerInvariant();
-                if (ext is ".dll" or ".json")
+                Directory.CreateDirectory(sharedDir);
+                foreach (var file in Directory.GetFiles(sourceDir))
                 {
                     File.Copy(file, Path.Combine(sharedDir, Path.GetFileName(file)), overwrite: true);
                 }
             }
         }
-
-        // Copy native files if any
-        var nativeDir = Path.Combine(packagePath, "runtimes", rid, "native");
-        if (Directory.Exists(nativeDir))
+        finally
         {
-            foreach (var file in Directory.GetFiles(nativeDir))
+            if (Directory.Exists(tempDir))
             {
-                var dest = Path.Combine(sharedDir, Path.GetFileName(file));
-                File.Copy(file, dest, overwrite: true);
-                
-                if (!OperatingSystem.IsWindows())
-                {
-                    SetFileExecutable(dest);
-                }
+                Directory.Delete(tempDir, recursive: true);
             }
         }
     }
 
-    /// <summary>
-    /// Gets the path to the apphost template from the Host package.
-    /// Downloads the package if not already cached.
-    /// </summary>
-    public async Task<string> GetAppHostTemplateAsync(string version, string rid, CancellationToken ct = default)
+    private async Task DownloadAndExtractAsync(RuntimeDownloadInfo downloadInfo, string targetPath, CancellationToken ct)
     {
-        var hostPackageId = $"Microsoft.NETCore.App.Host.{rid}";
-        var hostPackagePath = await _nuget.DownloadPackageAsync(hostPackageId, version, ct);
-
-        var apphostName = OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
-        var apphostPath = Path.Combine(hostPackagePath, "runtimes", rid, "native", apphostName);
-
-        if (!File.Exists(apphostPath))
+        Directory.CreateDirectory(_paths.Downloads);
+        var archivePath = Path.Combine(_paths.Downloads, downloadInfo.FileName);
+        
+        try
         {
-            throw new FileNotFoundException($"apphost not found at {apphostPath}");
-        }
+            // Download the archive
+            using (var response = await _http.GetAsync(downloadInfo.Url, HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                response.EnsureSuccessStatusCode();
+                using var fileStream = File.Create(archivePath);
+                await response.Content.CopyToAsync(fileStream, ct);
+            }
 
-        return apphostPath;
+            // Verify SHA512 hash
+            var actualHash = await ComputeSha512Async(archivePath, ct);
+            if (!string.Equals(actualHash, downloadInfo.Sha512Hash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Hash mismatch for {downloadInfo.FileName}. Expected: {downloadInfo.Sha512Hash}, Actual: {actualHash}");
+            }
+
+            // Extract archive
+            Directory.CreateDirectory(targetPath);
+            
+            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                ZipFile.ExtractToDirectory(archivePath, targetPath, overwriteFiles: true);
+            }
+            else if (archivePath.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+            {
+                await ExtractTarGzAsync(archivePath, targetPath, ct);
+            }
+            else
+            {
+                throw new NotSupportedException($"Unsupported archive format: {downloadInfo.FileName}");
+            }
+        }
+        finally
+        {
+            // Clean up downloaded archive
+            if (File.Exists(archivePath))
+            {
+                File.Delete(archivePath);
+            }
+        }
     }
 
-    private static void SetExecutePermissions(string runtimePath, string version, string frameworkName)
+    private static async Task<string> ComputeSha512Async(string filePath, CancellationToken ct)
     {
-        // Set +x on hostfxr (only for base runtime)
-        if (frameworkName == "Microsoft.NETCore.App")
+        using var stream = File.OpenRead(filePath);
+        var hash = await SHA512.HashDataAsync(stream, ct);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static async Task ExtractTarGzAsync(string archivePath, string targetPath, CancellationToken ct)
+    {
+        await using var fileStream = File.OpenRead(archivePath);
+        await using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+        await TarFile.ExtractToDirectoryAsync(gzipStream, targetPath, overwriteFiles: true, cancellationToken: ct);
+    }
+
+    private static void SetExecutePermissions(string runtimePath, string version)
+    {
+        // Set +x on dotnet muxer
+        var muxerPath = Path.Combine(runtimePath, "dotnet");
+        if (File.Exists(muxerPath))
         {
-            var fxrDir = Path.Combine(runtimePath, "host", "fxr", version);
-            if (Directory.Exists(fxrDir))
-            {
-                foreach (var file in Directory.GetFiles(fxrDir, "*.so"))
-                {
-                    SetFileExecutable(file);
-                }
-                foreach (var file in Directory.GetFiles(fxrDir, "*.dylib"))
-                {
-                    SetFileExecutable(file);
-                }
-            }
+            SetFileExecutable(muxerPath);
+        }
+
+        // Set +x on hostfxr
+        var fxrDir = Path.Combine(runtimePath, "host", "fxr", version);
+        if (Directory.Exists(fxrDir))
+        {
+            foreach (var file in Directory.GetFiles(fxrDir, "*.so"))
+                SetFileExecutable(file);
+            foreach (var file in Directory.GetFiles(fxrDir, "*.dylib"))
+                SetFileExecutable(file);
         }
 
         // Set +x on native files in shared dir
-        var sharedDir = Path.Combine(runtimePath, "shared", frameworkName, version);
+        var sharedDir = Path.Combine(runtimePath, "shared", "Microsoft.NETCore.App", version);
         if (Directory.Exists(sharedDir))
         {
             foreach (var file in Directory.GetFiles(sharedDir, "*.so"))
-            {
                 SetFileExecutable(file);
-            }
             foreach (var file in Directory.GetFiles(sharedDir, "*.dylib"))
-            {
                 SetFileExecutable(file);
-            }
         }
     }
 
     private static void SetFileExecutable(string path)
     {
-        // Use chmod via File.SetUnixFileMode (available in .NET 7+)
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             var mode = File.GetUnixFileMode(path);
@@ -187,119 +236,9 @@ public sealed class RuntimeDownloader
 
     private static bool IsRuntimeComplete(string runtimePath, string version)
     {
-        var hostfxrName = GetHostFxrName();
-        var hostfxrPath = Path.Combine(runtimePath, "host", "fxr", version, hostfxrName);
-        return File.Exists(hostfxrPath);
-    }
-
-    /// <summary>
-    /// Assemble extracted NuGet package into standard dotnet layout:
-    /// 
-    /// {runtimePath}/
-    /// ├── host/
-    /// │   └── fxr/
-    /// │       └── {version}/
-    /// │           └── hostfxr.dll
-    /// └── shared/
-    ///     └── {frameworkName}/
-    ///         └── {version}/
-    ///             ├── hostpolicy.dll
-    ///             ├── coreclr.dll
-    ///             ├── *.deps.json
-    ///             ├── *.runtimeconfig.json
-    ///             └── *.dll
-    /// </summary>
-    private static void AssembleRuntimeLayout(
-        string runtimePath,
-        string version,
-        string rid,
-        string runtimePackagePath,
-        string frameworkName)
-    {
-        // Create directory structure
-        var fxrDir = Path.Combine(runtimePath, "host", "fxr", version);
-        var sharedDir = Path.Combine(runtimePath, "shared", frameworkName, version);
-        
-        Directory.CreateDirectory(fxrDir);
-        Directory.CreateDirectory(sharedDir);
-
-        // Source paths in extracted package
-        var runtimeNativeDir = Path.Combine(runtimePackagePath, "runtimes", rid, "native");
-        var runtimeLibDir = FindRuntimeLibDir(runtimePackagePath, rid, version);
-
-        // hostfxr.dll goes to host/fxr/{version}/ (only for base runtime)
-        if (frameworkName == "Microsoft.NETCore.App")
-        {
-            var hostfxrName = GetHostFxrName();
-            var hostfxrSrc = Path.Combine(runtimeNativeDir, hostfxrName);
-            if (File.Exists(hostfxrSrc))
-            {
-                File.Copy(hostfxrSrc, Path.Combine(fxrDir, hostfxrName), overwrite: true);
-            }
-            else
-            {
-                throw new FileNotFoundException($"hostfxr not found at {hostfxrSrc}");
-            }
-
-            // Copy all native runtime files to shared dir (coreclr, hostpolicy, etc.)
-            if (Directory.Exists(runtimeNativeDir))
-            {
-                foreach (var file in Directory.GetFiles(runtimeNativeDir))
-                {
-                    var fileName = Path.GetFileName(file);
-                    // hostfxr goes to fxr dir, everything else to shared
-                    if (!fileName.Equals(hostfxrName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        File.Copy(file, Path.Combine(sharedDir, fileName), overwrite: true);
-                    }
-                }
-            }
-        }
-
-        // Copy managed assemblies (System.*.dll) and config files from lib dir
-        if (runtimeLibDir is not null && Directory.Exists(runtimeLibDir))
-        {
-            foreach (var file in Directory.GetFiles(runtimeLibDir))
-            {
-                var fileName = Path.GetFileName(file);
-                var ext = Path.GetExtension(file).ToLowerInvariant();
-                // Copy DLLs and JSON config files
-                if (ext is ".dll" or ".json")
-                {
-                    File.Copy(file, Path.Combine(sharedDir, fileName), overwrite: true);
-                }
-            }
-        }
-    }
-
-    private static string? FindRuntimeLibDir(string runtimePackagePath, string rid, string version)
-    {
-        // Try exact TFM match first: runtimes/{rid}/lib/net{major}.0
-        var majorVersion = version.Split('.')[0];
-        var exactPath = Path.Combine(runtimePackagePath, "runtimes", rid, "lib", $"net{majorVersion}.0");
-        if (Directory.Exists(exactPath))
-        {
-            return exactPath;
-        }
-
-        // Fall back to first available lib dir
-        var libBase = Path.Combine(runtimePackagePath, "runtimes", rid, "lib");
-        if (Directory.Exists(libBase))
-        {
-            var libDirs = Directory.GetDirectories(libBase);
-            if (libDirs.Length > 0)
-            {
-                return libDirs[0];
-            }
-        }
-
-        return null;
-    }
-
-    private static string GetHostFxrName()
-    {
-        if (OperatingSystem.IsWindows()) return "hostfxr.dll";
-        if (OperatingSystem.IsMacOS()) return "libhostfxr.dylib";
-        return "libhostfxr.so";
+        // Check for muxer as the primary indicator
+        var muxerName = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+        var muxerPath = Path.Combine(runtimePath, muxerName);
+        return File.Exists(muxerPath);
     }
 }

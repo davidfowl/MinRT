@@ -137,7 +137,8 @@ Console.WriteLine("Building MinRT context...");
 var context = await runBuilder.BuildAsync();
 
 Console.WriteLine($"Runtime: {context.RuntimePath}");
-Console.WriteLine($"AppHost: {context.AppHostPath}");
+Console.WriteLine($"Muxer: {context.MuxerPath}");
+Console.WriteLine($"App: {context.AppPath}");
 Console.WriteLine("---");
 
 var exitCode = context.Run();
