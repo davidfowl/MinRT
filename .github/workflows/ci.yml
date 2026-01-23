@@ -19,6 +19,9 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
+      - name: Publish minrt tool (required for embedded resources)
+        run: dotnet publish tools/minrt/minrt.csproj -c Release
+
       - name: Publish TestHost (linux-x64)
         run: dotnet publish tests/MinRT.TestHost -c Release -r linux-x64 -o artifacts/testhost-linux-x64
 
@@ -51,6 +54,9 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
+      - name: Publish minrt tool (required for embedded resources)
+        run: dotnet publish tools/minrt/minrt.csproj -c Release
+
       - name: Publish TestHost (win-x64)
         run: dotnet publish tests/MinRT.TestHost -c Release -r win-x64 -o artifacts/testhost-win-x64
 
@@ -70,6 +76,9 @@ jobs:
         with:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
+
+      - name: Publish minrt tool (required for embedded resources)
+        run: dotnet publish tools/minrt/minrt.csproj -c Release
 
       - name: Publish TestHost (osx-arm64)
         run: dotnet publish tests/MinRT.TestHost -c Release -r osx-arm64 -o artifacts/testhost-osx-arm64
