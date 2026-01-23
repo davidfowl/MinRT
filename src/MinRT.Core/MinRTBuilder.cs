@@ -209,6 +209,23 @@ public sealed class MinRTBuilder
                     $"Muxer not found in layout at {muxerPath}. " +
                     "Ensure the layout was created with CreateLayoutAsync().");
             }
+            
+            // Ensure muxer is executable on Unix
+            if (!OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    var mode = File.GetUnixFileMode(muxerPath);
+                    if ((mode & UnixFileMode.UserExecute) == 0)
+                    {
+                        File.SetUnixFileMode(muxerPath, mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                    }
+                }
+                catch
+                {
+                    // Ignore permission errors
+                }
+            }
         }
         else if (_requireOffline)
         {
@@ -422,7 +439,22 @@ public sealed class MinRTBuilder
 
         foreach (var file in Directory.GetFiles(sourceDir))
         {
-            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+            var destFile = Path.Combine(destDir, Path.GetFileName(file));
+            File.Copy(file, destFile, overwrite: true);
+            
+            // Preserve execute permissions on Unix
+            if (!OperatingSystem.IsWindows() && File.Exists(file))
+            {
+                try
+                {
+                    var mode = File.GetUnixFileMode(file);
+                    File.SetUnixFileMode(destFile, mode);
+                }
+                catch
+                {
+                    // Ignore permission errors
+                }
+            }
         }
 
         foreach (var dir in Directory.GetDirectories(sourceDir))
