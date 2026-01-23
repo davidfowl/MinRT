@@ -1,19 +1,10 @@
-# MinRT - Implementation Plan
+# MinRT - Specification
 
 ## Overview
 
 MinRT is a minimal .NET runtime bootstrapper that downloads the runtime from NuGet and executes managed applications without requiring a pre-installed .NET SDK. It also provides NuGet package restore capabilities via an embedded tool.
 
-## Status: ✅ All Parts Complete
-
-| Part | Description | Status |
-|------|-------------|--------|
-| 1 | MinRT.Core - AOT bootstrapper | ✅ Complete |
-
-| 3 | minrt CLI tool | ✅ Complete |
-| 4 | Embedded tool + unified API | ✅ Complete |
-
-**Tests:** 35 passing | **CI:** All jobs green
+**Tests:** 21 passing | **CI:** All jobs green
 
 ---
 
@@ -171,15 +162,14 @@ MinRT/
 │   │   ├── RuntimeDownloader.cs
 │   │   └── AppHostPatcher.cs
 │   │
-│   └── MinRT.NuGet/          # NuGet library
-│       ├── NuGetRestorer.cs
-│       └── NuGetAssemblyLoader.cs
+│   └── MinRT.NuGet/          # NuGet restore library
+│       └── NuGetRestorer.cs
 │
 ├── tools/minrt/              # CLI tool (embedded in Core)
 │   └── Program.cs            # restore + layout commands
 │
 └── tests/
-    ├── MinRT.Tests/          # 35 unit tests
+    ├── MinRT.Tests/          # 21 unit tests
     └── MinRT.TestHost/       # E2E test harness
 ```
 
