@@ -1,71 +1,41 @@
 # MinRT - Specification
 
-## Overview
+## Goal
 
-MinRT is a minimal .NET runtime bootstrapper that downloads the runtime from NuGet and executes managed applications without requiring a pre-installed .NET SDK. It also provides NuGet package restore capabilities via an embedded tool.
+Run .NET applications without requiring the .NET SDK or runtime to be pre-installed.
 
----
+## Approach
 
-## Architecture
+1. **Download runtime from NuGet** - Fetch `Microsoft.NETCore.App.Runtime.{rid}` packages on-demand
+2. **Patch AppHost** - Create a native executable that points to the app DLL
+3. **Set DOTNET_ROOT** - Configure the runtime location and spawn the process
+4. **Cache everything** - Runtime, packages, and patched executables cached in `~/.minrt`
 
-```mermaid
-graph TB
-    subgraph "MinRT.Core (AOT-compatible, 5.1MB)"
-        Builder[MinRTBuilder]
-        Context[MinRTContext]
-        Embedded[EmbeddedTool]
-        Downloader[RuntimeDownloader]
-        Patcher[AppHostPatcher]
-        
-        subgraph "Embedded Resources (34 files)"
-            MinrtDll[minrt.dll + deps]
-        end
-    end
+## Key Constraints
 
-    subgraph "minrt Tool (Portable)"
-        RestoreCmd[restore]
-        LayoutCmd[layout]
-    end
+- **AOT-compatible** - MinRT.Core must compile to native code
+- **No SDK dependency** - Works on machines with no .NET installed
+- **Cross-platform** - Windows, Linux, macOS
 
-    subgraph "Cache (~/.minrt)"
-        Runtimes[runtimes/]
-        Packages[packages/]
-        Tools[tools/minrt/]
-    end
+## NuGet Package Support
 
-    Builder --> Embedded
-    Builder --> Downloader
-    Builder --> Context
-    Embedded -.->|spawns| RestoreCmd
-    Embedded -.->|spawns| LayoutCmd
-    Downloader --> Runtimes
-    RestoreCmd --> Packages
-```
+Since NuGet libraries aren't AOT-friendly, MinRT embeds a portable `minrt` tool that runs via `dotnet` to handle package restore operations. This tool is extracted and spawned as a separate process when packages are requested.
 
 ## API
 
 ```csharp
-// Basic: Download runtime and run app
+// Download runtime and run app
 var context = await new MinRTBuilder()
     .WithAppPath("myapp.dll")
     .WithRuntimeVersion("10.0.0")
     .BuildAsync();
 context.Run();
 
-// With ASP.NET Core
-var context = await new MinRTBuilder()
-    .WithAppPath("webapp.dll")
-    .WithRuntimeVersion("10.0.0")
-    .WithAspNetCore()
-    .BuildAsync();
-
-// With NuGet packages (auto restore + layout)
+// With NuGet packages
 var context = await new MinRTBuilder()
     .WithAppPath("myapp.dll")
     .WithPackage("Newtonsoft.Json", "13.0.3")
-    .WithPackage("Humanizer.Core", "2.14.1")
     .BuildAsync();
-// context.PackageLayoutPath has the restored DLLs
 
 // Offline with pre-built layout
 var context = await new MinRTBuilder()
@@ -75,93 +45,30 @@ var context = await new MinRTBuilder()
     .BuildAsync();
 ```
 
-## Cache Layout
-
-```
-~/.minrt/
-├── runtimes/10.0.0-win-x64/     # Downloaded .NET runtime
-│   ├── host/fxr/10.0.0/
-│   └── shared/Microsoft.NETCore.App/10.0.0/
-├── packages/                     # NuGet package cache + restore outputs
-│   └── restore/{hash}/
-│       ├── obj/project.assets.json
-│       └── libs/*.dll
-├── tools/minrt/                  # Extracted embedded tool
-│   ├── minrt.dll
-│   └── *.dll (dependencies)
-└── apphosts/{hash}/              # Patched app executables
-    ├── myapp.exe
-    └── myapp.dll
-```
-
----
-
-## Part 4: Embedded NuGet Tool
-
-### Why Embedded?
+## Architecture
 
 ```mermaid
-graph LR
-    subgraph Problem
-        A[MinRT.Core must be AOT] --> C[Can't use NuGet.* packages]
-        B[NuGet.* not AOT-friendly] --> C
+graph TB
+    subgraph "MinRT.Core (AOT)"
+        Builder[MinRTBuilder]
+        Downloader[RuntimeDownloader]
+        Patcher[AppHostPatcher]
+        Embedded[EmbeddedTool]
     end
-    
-    subgraph Solution
-        C --> D[Embed JIT tool]
-        D --> E[Extract on first use]
-        E --> F[Spawn via dotnet]
+
+    subgraph "Cache (~/.minrt)"
+        Runtimes[runtimes/]
+        Packages[packages/]
+        AppHosts[apphosts/]
     end
+
+    NuGet[nuget.org]
+
+    Builder --> Downloader
+    Builder --> Patcher
+    Builder --> Embedded
+    Downloader --> NuGet
+    Downloader --> Runtimes
+    Embedded -.->|spawns| Packages
+    Patcher --> AppHosts
 ```
-
-### Build Flow
-
-```mermaid
-flowchart TD
-    Start([BuildAsync]) --> Pkgs{Packages?}
-    Pkgs -->|Yes| Extract[Extract minrt.dll]
-    Extract --> Restore[dotnet minrt.dll restore]
-    Restore --> Layout[dotnet minrt.dll layout]
-    Layout --> AddPath[Add to probing paths]
-    AddPath --> Runtime
-    Pkgs -->|No| Runtime[Download runtime]
-    Runtime --> AppHost[Patch AppHost]
-    AppHost --> Done([MinRTContext])
-```
-
-### minrt Commands
-
-```bash
-# Restore packages to project.assets.json
-minrt restore -p "Newtonsoft.Json 13.0.3" -o ./obj
-
-# Create flat DLL layout
-minrt layout -a ./obj/project.assets.json -o ./libs
-```
-
-
-
-## Project Structure
-
-```
-MinRT/
-├── src/
-│   ├── MinRT.Core/           # AOT bootstrapper (embeds minrt tool)
-│   │   ├── MinRTBuilder.cs
-│   │   ├── MinRTContext.cs
-│   │   ├── EmbeddedTool.cs
-│   │   ├── RuntimeDownloader.cs
-│   │   └── AppHostPatcher.cs
-│   │
-│   └── MinRT.NuGet/          # NuGet restore library
-│       └── NuGetRestorer.cs
-│
-├── tools/minrt/              # CLI tool (embedded in Core)
-│   └── Program.cs            # restore + layout commands
-│
-└── tests/
-    ├── MinRT.Tests/          # 21 unit tests
-    └── MinRT.TestHost/       # E2E test harness
-```
-
-
