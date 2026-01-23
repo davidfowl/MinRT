@@ -72,3 +72,48 @@ graph TB
     Embedded -.->|spawns| Packages
     Patcher --> AppHosts
 ```
+
+## Cache Layout
+
+```
+~/.minrt/
+├── runtimes/{version}-{rid}/        # Downloaded .NET runtime
+│   ├── host/fxr/{version}/
+│   └── shared/Microsoft.NETCore.App/{version}/
+├── packages/                         # NuGet restore outputs
+│   └── restore/{hash}/
+│       ├── obj/project.assets.json
+│       └── libs/*.dll
+└── apphosts/{hash}/                  # Patched executables
+    ├── myapp.exe
+    └── myapp.dll
+```
+
+## Offline Layout
+
+A layout is a self-contained directory with the runtime that can be distributed alongside the app. This enables air-gapped scenarios where no network access is available.
+
+```csharp
+// Create a layout (downloads runtime)
+await new MinRTBuilder()
+    .WithRuntimeVersion("10.0.0")
+    .WithAspNetCore()
+    .CreateLayoutAsync("./my-runtime");
+
+// Use the layout offline
+var context = await new MinRTBuilder()
+    .WithAppPath("myapp.dll")
+    .WithLayout("./my-runtime")
+    .RequireOffline()
+    .BuildAsync();
+```
+
+Layout structure:
+```
+my-runtime/
+├── apphost.exe                      # Template (gets patched per-app)
+├── host/fxr/{version}/hostfxr.dll
+└── shared/
+    ├── Microsoft.NETCore.App/{version}/
+    └── Microsoft.AspNetCore.App/{version}/  # if WithAspNetCore()
+```
