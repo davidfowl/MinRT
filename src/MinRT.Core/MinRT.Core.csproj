@@ -7,9 +7,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
     
-    <!-- Default RID for embedded tool (can be overridden) -->
-    <MinrtToolRid Condition="'$(MinrtToolRid)' == ''">win-x64</MinrtToolRid>
-    <MinrtToolPublishDir>$(MSBuildThisFileDirectory)..\..\tools\minrt\bin\$(Configuration)\net10.0\$(MinrtToolRid)\publish\</MinrtToolPublishDir>
+    <!-- Path to minrt publish output (AnyCPU) -->
+    <MinrtToolPublishDir>$(MSBuildThisFileDirectory)..\..\tools\minrt\bin\$(Configuration)\net10.0\publish\</MinrtToolPublishDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,17 +17,16 @@
     <PackageReference Include="NuGet.Versioning" Version="7.0.1" />
   </ItemGroup>
 
-  <!-- Embed minrt.exe as a resource if it exists (from publish output) -->
-  <ItemGroup Condition="Exists('$(MinrtToolPublishDir)minrt.exe')">
-    <EmbeddedResource Include="$(MinrtToolPublishDir)minrt.exe">
-      <LogicalName>MinRT.Core.minrt.exe</LogicalName>
+  <!-- Embed all minrt DLLs as resources -->
+  <ItemGroup Condition="Exists('$(MinrtToolPublishDir)minrt.dll')">
+    <EmbeddedResource Include="$(MinrtToolPublishDir)*.dll">
+      <LogicalName>MinRT.Core.minrt.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
-  </ItemGroup>
-
-  <!-- Embed minrt (no extension) for Linux/macOS -->
-  <ItemGroup Condition="Exists('$(MinrtToolPublishDir)minrt') AND !Exists('$(MinrtToolPublishDir)minrt.exe')">
-    <EmbeddedResource Include="$(MinrtToolPublishDir)minrt">
-      <LogicalName>MinRT.Core.minrt</LogicalName>
+    <EmbeddedResource Include="$(MinrtToolPublishDir)minrt.runtimeconfig.json">
+      <LogicalName>MinRT.Core.minrt.minrt.runtimeconfig.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(MinrtToolPublishDir)minrt.deps.json">
+      <LogicalName>MinRT.Core.minrt.minrt.deps.json</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

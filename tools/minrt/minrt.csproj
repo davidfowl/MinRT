@@ -6,10 +6,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>minrt</AssemblyName>
-    
-    <!-- Single file but framework-dependent (much smaller) -->
-    <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>

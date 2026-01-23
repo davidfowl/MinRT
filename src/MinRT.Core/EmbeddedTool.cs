@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.InteropServices;
 
 namespace MinRT.Core;
 
@@ -8,23 +7,22 @@ namespace MinRT.Core;
 /// </summary>
 public static class EmbeddedTool
 {
-    private const string ToolResourceName = "MinRT.Core.minrt";
+    private const string ResourcePrefix = "MinRT.Core.minrt.";
     private const string VersionFileName = ".minrt-version";
 
     /// <summary>
-    /// Gets the path to the extracted minrt tool, extracting it if necessary.
+    /// Gets the path to the extracted minrt.dll, extracting all tool files if necessary.
     /// </summary>
     public static async Task<string> GetToolPathAsync(string cacheDirectory, CancellationToken ct = default)
     {
-        var toolsDir = Path.Combine(cacheDirectory, "tools");
-        var toolName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "minrt.exe" : "minrt";
-        var toolPath = Path.Combine(toolsDir, toolName);
+        var toolsDir = Path.Combine(cacheDirectory, "tools", "minrt");
+        var toolPath = Path.Combine(toolsDir, "minrt.dll");
         var versionPath = Path.Combine(toolsDir, VersionFileName);
 
         // Check if extraction is needed
         if (NeedsExtraction(toolPath, versionPath))
         {
-            await ExtractToolAsync(toolPath, versionPath, ct);
+            await ExtractToolAsync(toolsDir, versionPath, ct);
         }
 
         return toolPath;
@@ -51,76 +49,44 @@ public static class EmbeddedTool
         return !string.Equals(currentVersion, extractedVersion, StringComparison.Ordinal);
     }
 
-    private static async Task ExtractToolAsync(string toolPath, string versionPath, CancellationToken ct)
+    private static async Task ExtractToolAsync(string toolsDir, string versionPath, CancellationToken ct)
     {
         var assembly = typeof(EmbeddedTool).Assembly;
-        
-        // Find the embedded resource
-        var resourceName = GetResourceName(assembly);
-        if (resourceName == null)
+        var resourceNames = assembly.GetManifestResourceNames()
+            .Where(n => n.StartsWith(ResourcePrefix, StringComparison.Ordinal))
+            .ToList();
+
+        if (resourceNames.Count == 0)
         {
             throw new InvalidOperationException(
                 "Embedded minrt tool not found. Available resources: " + 
                 string.Join(", ", assembly.GetManifestResourceNames()));
         }
 
-        using var resourceStream = assembly.GetManifestResourceStream(resourceName);
-        if (resourceStream == null)
-        {
-            throw new InvalidOperationException($"Could not load embedded resource: {resourceName}");
-        }
-
         // Ensure directory exists
-        var toolsDir = Path.GetDirectoryName(toolPath)!;
         Directory.CreateDirectory(toolsDir);
 
-        // Extract the tool
-        using var fileStream = new FileStream(toolPath, FileMode.Create, FileAccess.Write, FileShare.None);
-        await resourceStream.CopyToAsync(fileStream, ct);
-
-        // Make executable on Unix
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        // Extract all embedded files
+        foreach (var resourceName in resourceNames)
         {
-            MakeExecutable(toolPath);
+            var fileName = resourceName[ResourcePrefix.Length..]; // Remove prefix
+            var filePath = Path.Combine(toolsDir, fileName);
+
+            using var resourceStream = assembly.GetManifestResourceStream(resourceName);
+            if (resourceStream == null) continue;
+
+            using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await resourceStream.CopyToAsync(fileStream, ct);
         }
 
         // Write version file
         await File.WriteAllTextAsync(versionPath, GetCurrentVersion(), ct);
     }
 
-    private static string? GetResourceName(Assembly assembly)
-    {
-        var names = assembly.GetManifestResourceNames();
-        
-        // Look for minrt.exe or minrt (without extension on Unix)
-        return names.FirstOrDefault(n => 
-            n.EndsWith("minrt.exe", StringComparison.OrdinalIgnoreCase) ||
-            n.EndsWith("minrt", StringComparison.OrdinalIgnoreCase));
-    }
-
     private static string GetCurrentVersion()
     {
         var assembly = typeof(EmbeddedTool).Assembly;
         return assembly.GetName().Version?.ToString() ?? "1.0.0.0";
-    }
-
-    private static void MakeExecutable(string path)
-    {
-        // Use chmod via Process on Unix-like systems
-        try
-        {
-            using var process = new System.Diagnostics.Process();
-            process.StartInfo.FileName = "chmod";
-            process.StartInfo.Arguments = $"+x \"{path}\"";
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.CreateNoWindow = true;
-            process.Start();
-            process.WaitForExit();
-        }
-        catch
-        {
-            // Best effort - some systems may not need this
-        }
     }
 
     /// <summary>
@@ -134,7 +100,8 @@ public static class EmbeddedTool
         var toolPath = await GetToolPathAsync(cacheDirectory, ct);
         
         using var process = new System.Diagnostics.Process();
-        process.StartInfo.FileName = toolPath;
+        process.StartInfo.FileName = "dotnet";
+        process.StartInfo.ArgumentList.Add(toolPath);
         process.StartInfo.UseShellExecute = false;
         process.StartInfo.CreateNoWindow = true;
         
@@ -160,7 +127,8 @@ public static class EmbeddedTool
         var toolPath = await GetToolPathAsync(cacheDirectory, ct);
         
         using var process = new System.Diagnostics.Process();
-        process.StartInfo.FileName = toolPath;
+        process.StartInfo.FileName = "dotnet";
+        process.StartInfo.ArgumentList.Add(toolPath);
         process.StartInfo.UseShellExecute = false;
         process.StartInfo.CreateNoWindow = true;
         process.StartInfo.RedirectStandardOutput = true;
