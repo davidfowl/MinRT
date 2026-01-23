@@ -29,6 +29,8 @@ public sealed class MinRTBuilder
     private bool _requireOffline; // Fail if any download is attempted
     private readonly List<string> _probingPaths = [];
     private readonly HashSet<SharedFramework> _sharedFrameworks = [SharedFramework.NetCore];
+    private readonly List<(string Id, string Version)> _packages = [];
+    private string? _packagesJsonPath;
 
     /// <summary>
     /// Path to the application DLL to run (required)
@@ -135,6 +137,35 @@ public sealed class MinRTBuilder
     }
 
     /// <summary>
+    /// Add a NuGet package to restore and include in the app's probing paths.
+    /// Packages are restored using the embedded minrt tool.
+    /// </summary>
+    public MinRTBuilder WithPackage(string packageId, string version)
+    {
+        _packages.Add((packageId, version));
+        return this;
+    }
+
+    /// <summary>
+    /// Add multiple NuGet packages to restore and include in the app's probing paths.
+    /// </summary>
+    public MinRTBuilder WithPackages(IEnumerable<(string Id, string Version)> packages)
+    {
+        _packages.AddRange(packages);
+        return this;
+    }
+
+    /// <summary>
+    /// Load packages from a JSON file. The JSON should have the format:
+    /// { "packages": [{ "id": "...", "version": "..." }, ...] }
+    /// </summary>
+    public MinRTBuilder WithPackagesFromJson(string jsonPath)
+    {
+        _packagesJsonPath = jsonPath;
+        return this;
+    }
+
+    /// <summary>
     /// Build the runtime context - downloads runtime/apphost (or uses existing layout) and patches apphost
     /// </summary>
     public async Task<MinRTContext> BuildAsync(CancellationToken ct = default)
@@ -203,6 +234,17 @@ public sealed class MinRTBuilder
             appHostTemplate = await downloader.GetAppHostTemplateAsync(_runtimeVersion, _runtimeIdentifier, ct);
         }
 
+        // 2.5 Handle package restore if packages specified
+        string? packageLayoutPath = null;
+        if (_packages.Count > 0 || !string.IsNullOrEmpty(_packagesJsonPath))
+        {
+            packageLayoutPath = await RestorePackagesAsync(paths, ct);
+            if (!string.IsNullOrEmpty(packageLayoutPath))
+            {
+                _probingPaths.Add(packageLayoutPath);
+            }
+        }
+
         // 3. Create app directory and patch apphost
         var appFileName = Path.GetFileName(appPath);
         var appDir = GetAppDirectory(paths, appPath);
@@ -255,7 +297,88 @@ public sealed class MinRTBuilder
         // 4. Build assembly paths from probing paths
         var assemblyPaths = BuildAssemblyPaths();
 
-        return new MinRTContext(runtimePath, _runtimeVersion, appHostPath, assemblyPaths, [.. _probingPaths]);
+        return new MinRTContext(runtimePath, _runtimeVersion, appHostPath, assemblyPaths, [.. _probingPaths], packageLayoutPath);
+    }
+
+    /// <summary>
+    /// Restore packages using the embedded minrt tool and create a layout.
+    /// </summary>
+    private async Task<string?> RestorePackagesAsync(CachePaths paths, CancellationToken ct)
+    {
+        // Create a unique directory for this package set
+        var packageHash = ComputePackageHash();
+        var objDir = Path.Combine(paths.Packages, "restore", packageHash, "obj");
+        var layoutDir = Path.Combine(paths.Packages, "restore", packageHash, "libs");
+        var assetsPath = Path.Combine(objDir, "project.assets.json");
+
+        // Skip if layout already exists
+        if (Directory.Exists(layoutDir) && Directory.GetFiles(layoutDir, "*.dll").Length > 0)
+        {
+            return layoutDir;
+        }
+
+        Directory.CreateDirectory(objDir);
+
+        // Build arguments for restore command
+        var restoreArgs = new List<string> { "restore", "-o", objDir, "-f", _targetFramework ?? "net9.0" };
+        
+        foreach (var (id, version) in _packages)
+        {
+            restoreArgs.Add("-p");
+            restoreArgs.Add($"{id} {version}");
+        }
+
+        if (!string.IsNullOrEmpty(_packagesJsonPath))
+        {
+            restoreArgs.Add("-j");
+            restoreArgs.Add(_packagesJsonPath);
+        }
+
+        // Run restore
+        var (exitCode, output, error) = await EmbeddedTool.RunWithOutputAsync(
+            paths.Root, 
+            [.. restoreArgs], 
+            ct);
+
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Package restore failed (exit code {exitCode}): {error}\n{output}");
+        }
+
+        // Run layout
+        var layoutArgs = new List<string> 
+        { 
+            "layout", 
+            "-a", assetsPath, 
+            "-o", layoutDir, 
+            "-f", _targetFramework ?? "net9.0" 
+        };
+
+        (exitCode, output, error) = await EmbeddedTool.RunWithOutputAsync(
+            paths.Root, 
+            [.. layoutArgs], 
+            ct);
+
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Package layout failed (exit code {exitCode}): {error}\n{output}");
+        }
+
+        return layoutDir;
+    }
+
+    private string ComputePackageHash()
+    {
+        // Create a hash from package list for caching
+        var content = string.Join(";", _packages.OrderBy(p => p.Id).Select(p => $"{p.Id}:{p.Version}"));
+        if (!string.IsNullOrEmpty(_packagesJsonPath))
+        {
+            content += $";json:{_packagesJsonPath}";
+        }
+        content += $";tfm:{_targetFramework ?? "net9.0"}";
+        return content.GetHashCode().ToString("X8");
     }
 
     private static string GetAppDirectory(CachePaths paths, string appPath)

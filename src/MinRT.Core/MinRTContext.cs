@@ -15,19 +15,22 @@ public sealed class MinRTContext
     private readonly string _appHostPath;
     private readonly Dictionary<string, string> _assemblyPaths;
     private readonly List<string> _probingPaths;
+    private readonly string? _packageLayoutPath;
 
     internal MinRTContext(
         string runtimePath,
         string runtimeVersion,
         string appHostPath,
         Dictionary<string, string> assemblyPaths,
-        List<string> probingPaths)
+        List<string> probingPaths,
+        string? packageLayoutPath = null)
     {
         _runtimePath = runtimePath;
         _runtimeVersion = runtimeVersion;
         _appHostPath = appHostPath;
         _assemblyPaths = assemblyPaths;
         _probingPaths = probingPaths;
+        _packageLayoutPath = packageLayoutPath;
     }
 
     /// <summary>
@@ -49,6 +52,12 @@ public sealed class MinRTContext
     /// Resolved assembly paths (assembly name -> full path)
     /// </summary>
     public IReadOnlyDictionary<string, string> AssemblyPaths => _assemblyPaths;
+
+    /// <summary>
+    /// Path to the restored package layout directory (contains DLLs from NuGet packages).
+    /// Null if no packages were restored.
+    /// </summary>
+    public string? PackageLayoutPath => _packageLayoutPath;
 
     /// <summary>
     /// Run the application
