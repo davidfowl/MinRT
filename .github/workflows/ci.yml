@@ -477,6 +477,62 @@ jobs:
       - name: Restore
         run: dotnet restore MinRT.slnx
 
+      - name: Publish minrt tool (required for embedded tool)
+        run: dotnet publish tools/minrt/minrt.csproj -c Debug
+
       - name: Run NuGet tests
         run: dotnet test tests/MinRT.Tests --verbosity normal
         timeout-minutes: 10
+
+  # NuGet Package E2E test (full flow: restore + layout + run)
+  nuget-e2e:
+    runs-on: ubuntu-latest
+    needs: build-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: artifacts/
+
+      - name: Make TestHost executable
+        run: chmod +x artifacts/testhost-linux-x64/MinRT.TestHost
+
+      - name: Publish hello-nuget app (DLL only, no dependencies)
+        run: |
+          # Publish without dependencies - MinRT will restore Newtonsoft.Json
+          dotnet build tests/apps/hello-nuget -c Release
+          mkdir -p artifacts/hello-nuget
+          cp tests/apps/hello-nuget/bin/Release/net10.0/hello-nuget.dll artifacts/hello-nuget/
+          cp tests/apps/hello-nuget/bin/Release/net10.0/hello-nuget.runtimeconfig.json artifacts/hello-nuget/
+
+      - name: Run hello-nuget via MinRT with package restore
+        run: |
+          cd artifacts
+          echo "Running app with NuGet package restore..."
+          ./testhost-linux-x64/MinRT.TestHost hello-nuget/hello-nuget.dll --package Newtonsoft.Json 13.0.3
+        timeout-minutes: 5
+
+      - name: Verify output
+        run: |
+          cd artifacts
+          # Capture output
+          OUTPUT=$(./testhost-linux-x64/MinRT.TestHost hello-nuget/hello-nuget.dll --package Newtonsoft.Json 13.0.3 2>&1)
+          echo "$OUTPUT"
+          
+          # Verify it contains expected JSON output
+          if echo "$OUTPUT" | grep -q "Hello from NuGet"; then
+            echo "✓ NuGet package E2E test passed!"
+          else
+            echo "✗ Expected output not found"
+            exit 1
+          fi
+        timeout-minutes: 5

@@ -12,6 +12,7 @@ if (args.Length == 0)
     Console.WriteLine("  --layout <path>              Use existing runtime layout (no download)");
     Console.WriteLine("  --create-layout <path>       Create a runtime layout and exit");
     Console.WriteLine("  --probe <path>               Add a folder of DLLs to probing paths");
+    Console.WriteLine("  --package <id> <version>     Add a NuGet package to restore");
     Console.WriteLine("  --offline                    Fail if any download is attempted (use with --layout)");
     Console.WriteLine();
     Console.WriteLine("Examples:");
@@ -21,6 +22,7 @@ if (args.Length == 0)
     Console.WriteLine("  MinRT.TestHost ./hello.dll --layout ./my-runtime");
     Console.WriteLine("  MinRT.TestHost ./hello.dll --layout ./my-runtime --offline");
     Console.WriteLine("  MinRT.TestHost ./myapp.dll --probe ./libs");
+    Console.WriteLine("  MinRT.TestHost ./myapp.dll --package Newtonsoft.Json 13.0.3");
     return 1;
 }
 
@@ -38,6 +40,17 @@ for (int i = 0; i < args.Length; i++)
     {
         probePaths.Add(args[i + 1]);
         i += 1;
+    }
+}
+
+// Parse --package args (can be multiple)
+var packages = new List<(string Id, string Version)>();
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--package" && i + 2 < args.Length)
+    {
+        packages.Add((args[i + 1], args[i + 2]));
+        i += 2;
     }
 }
 
@@ -80,6 +93,7 @@ Console.WriteLine($"App: {dllPath}");
 Console.WriteLine($"ASP.NET Core: {includeAspNet}");
 Console.WriteLine($"Offline: {requireOffline}");
 Console.WriteLine($"Probe paths: {probePaths.Count}");
+Console.WriteLine($"Packages: {packages.Count}");
 Console.WriteLine($"Cache: {cacheDir}");
 
 var runBuilder = new MinRTBuilder()
@@ -102,6 +116,12 @@ foreach (var probePath in probePaths)
 {
     Console.WriteLine($"  Probe: {probePath}");
     runBuilder.AddProbingPath(probePath);
+}
+
+foreach (var (id, version) in packages)
+{
+    Console.WriteLine($"  Package: {id} {version}");
+    runBuilder.WithPackage(id, version);
 }
 
 if (layoutIdx >= 0)
