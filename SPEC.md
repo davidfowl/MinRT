@@ -9,7 +9,7 @@ MinRT is a minimal .NET runtime bootstrapper that downloads the runtime from NuG
 | Part | Description | Status |
 |------|-------------|--------|
 | 1 | MinRT.Core - AOT bootstrapper | ✅ Complete |
-| 2 | NuGet AssemblyLoadContext | ✅ Complete |
+
 | 3 | minrt CLI tool | ✅ Complete |
 | 4 | Embedded tool + unified API | ✅ Complete |
 
@@ -155,24 +155,6 @@ minrt layout -a ./obj/project.assets.json -o ./libs
 ```bash
 # Run app with automatic package restore
 MinRT.TestHost myapp.dll --package Newtonsoft.Json 13.0.3
-```
-
----
-
-## Part 2: NuGet AssemblyLoadContext
-
-Runtime NuGet package resolution via custom `AssemblyLoadContext`. For in-process package loading (alternative to embedded tool approach).
-
-```csharp
-var alc = await NuGetAssemblyLoader.CreateBuilder()
-    .AddPackage("Newtonsoft.Json", "13.0.3")
-    .AddPackage("Microsoft.Extensions.Logging", "9.0.0")
-    .WithTargetFramework("net10.0")
-    .UseDefaultNuGetConfig()
-    .BuildAsync();
-
-var assembly = alc.LoadAssembly("Newtonsoft.Json");
-var type = alc.GetType("Newtonsoft.Json", "Newtonsoft.Json.JsonConvert");
 ```
 
 ---
