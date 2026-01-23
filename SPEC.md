@@ -201,12 +201,4 @@ MinRT/
     └── MinRT.TestHost/       # E2E test harness
 ```
 
-## CI Jobs
 
-| Job | Description |
-|-----|-------------|
-| build-linux/windows/macos | Publish minrt + TestHost |
-| core-e2e-* | Run app without .NET installed |
-| airgap-e2e-* | Offline mode with pre-built layout |
-| nuget-tests | 35 unit tests |
-| nuget-e2e | Full NuGet restore + run flow |
