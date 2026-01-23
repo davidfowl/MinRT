@@ -185,6 +185,13 @@ This layout can be:
 - [x] ModuleInitializer + default ALC chaining pattern
 - [x] Comprehensive test suite (8 tests)
 
+### Part 3: NuGet Restore CLI (minrt-nuget) ✅
+- [x] Add NuGetRestorer class to MinRT.NuGet
+- [x] Use RestoreRunner.RunAsync with PackageSpec (same as dotnet restore)
+- [x] Output project.assets.json matching SDK format
+- [x] CLI with --package, --json, --output, --framework options
+- [x] Transitive dependency resolution
+
 ---
 
 ## Part 2: NuGet AssemblyLoadContext

@@ -10,4 +10,5 @@
   <Project Path="src/MinRT.NuGet/MinRT.NuGet.csproj" />
   <Project Path="tests/MinRT.TestHost/MinRT.TestHost.csproj" />
   <Project Path="tests/MinRT.Tests/MinRT.Tests.csproj" />
+  <Project Path="tools/minrt-nuget/minrt-nuget.csproj" />
 </Solution>
