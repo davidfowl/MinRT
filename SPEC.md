@@ -139,14 +139,7 @@ minrt restore -p "Newtonsoft.Json 13.0.3" -o ./obj
 minrt layout -a ./obj/project.assets.json -o ./libs
 ```
 
-### TestHost Usage
 
-```bash
-# Run app with automatic package restore
-MinRT.TestHost myapp.dll --package Newtonsoft.Json 13.0.3
-```
-
----
 
 ## Project Structure
 
