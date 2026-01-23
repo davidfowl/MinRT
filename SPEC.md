@@ -4,8 +4,6 @@
 
 MinRT is a minimal .NET runtime bootstrapper that downloads the runtime from NuGet and executes managed applications without requiring a pre-installed .NET SDK. It also provides NuGet package restore capabilities via an embedded tool.
 
-**Tests:** 21 passing | **CI:** All jobs green
-
 ---
 
 ## Architecture
